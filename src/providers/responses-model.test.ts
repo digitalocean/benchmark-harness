@@ -187,7 +187,7 @@ describe("responses-model", () => {
       )
     );
     assertSuccess(exit);
-    expect(captured.value?.url).toBe("https://example.test/api/v1/responses");
+    expect(captured.value?.url).toBe("https://example.test/responses");
     expect(captured.value?.body).toMatchObject({
       model: "openai/gpt-5",
       input,

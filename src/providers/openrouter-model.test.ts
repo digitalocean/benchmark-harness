@@ -883,3 +883,163 @@ describe("openrouter-model 2xx error envelope", () => {
     expect(warnContextFor(warn)["raw_body"]).toBe(body);
   });
 });
+describe("openrouter-model streaming", () => {
+  let restore: (() => void) | undefined;
+  afterEach(() => {
+    restore?.();
+    restore = undefined;
+  });
+  function installSseFetch(
+    sseBody: string,
+    captured: { value: CapturedRequest | undefined }
+  ): () => void {
+    const original = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const req = input instanceof Request ? input : new Request(input, init);
+      const rawBody = await req.clone().text();
+      const headers: Record<string, string> = {};
+      for (const [k, v] of req.headers.entries()) {
+        headers[k.toLowerCase()] = v;
+      }
+      captured.value = {
+        url: req.url,
+        body: parseJsonObject(rawBody),
+        headers,
+        signal: req.signal,
+      };
+      return new Response(sseBody, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    };
+    return () => {
+      globalThis.fetch = original;
+    };
+  }
+  it("requests streaming with usage included", async () => {
+    const captured = newHolder();
+    restore = installSseFetch(
+      [
+        `data: ${JSON.stringify({ id: "1", model: "m", choices: [{ index: 0, delta: { content: "Answer: A" }, finish_reason: null }] })}`,
+        `data: ${JSON.stringify({ id: "1", model: "m", choices: [{ index: 0, delta: {}, finish_reason: "stop", usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }] })}`,
+        "data: [DONE]",
+      ].join("\n\n"),
+      captured
+    );
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+    });
+    const exit = await runPromiseExit(
+      gen(function* run() {
+        const model = yield* Model;
+        return yield* model.generate(MESSAGES, {});
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    assertSuccess(exit);
+    expect(exit.value.completion).toBe("Answer: A");
+    expect(exit.value.usage).toMatchObject({
+      inputTokens: 1,
+      outputTokens: 1,
+      totalTokens: 2,
+    });
+    expect(captured.value?.body).toMatchObject({
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+  });
+  it("reassembles content split across multiple delta chunks", async () => {
+    const captured = newHolder();
+    restore = installSseFetch(
+      [
+        `data: ${JSON.stringify({ id: "1", model: "m", choices: [{ index: 0, delta: { content: "Answer" }, finish_reason: null }] })}`,
+        `data: ${JSON.stringify({ id: "1", model: "m", choices: [{ index: 0, delta: { content: ": B" }, finish_reason: null }] })}`,
+        `data: ${JSON.stringify({ id: "1", model: "m", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}`,
+        "data: [DONE]",
+      ].join("\n\n"),
+      captured
+    );
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+    });
+    const exit = await runPromiseExit(
+      gen(function* run() {
+        const model = yield* Model;
+        return yield* model.generate(MESSAGES, {});
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    assertSuccess(exit);
+    expect(exit.value.completion).toBe("Answer: B");
+  });
+  it("merges streamed tool_call deltas by index", async () => {
+    const captured = newHolder();
+    restore = installSseFetch(
+      [
+        `data: ${JSON.stringify({
+          id: "1",
+          model: "m",
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "lookup", arguments: '{"q":' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        })}`,
+        `data: ${JSON.stringify({
+          id: "1",
+          model: "m",
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [{ index: 0, function: { arguments: '"kimi"}' } }],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+        })}`,
+        "data: [DONE]",
+      ].join("\n\n"),
+      captured
+    );
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+    });
+    const exit = await runPromiseExit(
+      gen(function* run() {
+        const model = yield* Model;
+        return yield* model.generate(MESSAGES, {
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "lookup",
+                description: "look something up",
+                parameters: { type: "object" },
+              },
+            },
+          ],
+        });
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    assertSuccess(exit);
+    expect(exit.value.message.toolCalls).toMatchObject([
+      {
+        id: "call_1",
+        function: { name: "lookup", arguments: '{"q":"kimi"}' },
+      },
+    ]);
+  });
+});

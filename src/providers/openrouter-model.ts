@@ -57,8 +57,7 @@ export interface OpenRouterModelConfig {
 }
 
 export function normalizeBaseUrl(baseUrl: string): string {
-  const trimmed = baseUrl.replace(/\/+$/u, "");
-  return trimmed.endsWith("/api/v1") ? trimmed : `${trimmed}/api/v1`;
+  return baseUrl.replace(/\/+$/u, "");
 }
 
 export function makeOpenRouterModelLayer(
@@ -161,7 +160,8 @@ export function generate(
     const body = {
       model,
       messages: messages.map(toApiMessage),
-      stream: false,
+      stream: true,
+      stream_options: { include_usage: true },
       cache_control: { type: "ephemeral" },
       ...(genConfig.temperature !== undefined && {
         temperature: genConfig.temperature,
@@ -216,7 +216,7 @@ export function generate(
       );
     }
     const rawBody = yield* response.text;
-    const json = yield* parseJsonBody(rawBody, identifiers);
+    const json = yield* decodeChatCompletionBody(rawBody, identifiers);
     const envelopeError = errorEnvelopeError(
       json,
       identifiers,
@@ -241,15 +241,15 @@ export function generate(
 
 type ResponseIdentifiers = Pick<ModelErrorIdentifiers, "cfRay" | "xRequestId">;
 
-const RAW_BODY_LOG_LIMIT = 2000;
+interface StreamToolCallAccumulator {
+  id?: string;
+  type?: string;
+  function: { name?: string; arguments: string };
+}
 
-const errorEnvelopeSchema = z.object({
-  choices: z.array(z.unknown()).nullish(),
-  error: z.object({
-    message: z.string().optional(),
-    code: z.union([z.number(), z.string()]).optional(),
-  }),
-});
+function looksLikeSse(rawBody: string): boolean {
+  return /^data:/mu.test(rawBody);
+}
 
 function parseJsonBody(
   rawBody: string,
@@ -270,6 +270,173 @@ function parseJsonBody(
     return fail(error);
   }
 }
+
+function mergeStreamToolCallDelta(
+  toolCalls: StreamToolCallAccumulator[],
+  delta: Record<string, unknown>
+): void {
+  const deltaCalls = delta["tool_calls"];
+  if (!Array.isArray(deltaCalls)) {
+    return;
+  }
+  for (const rawCall of deltaCalls) {
+    if (!isRecord(rawCall)) {
+      continue;
+    }
+    const index = typeof rawCall["index"] === "number" ? rawCall["index"] : 0;
+    const existing = (toolCalls[index] ??= { function: { arguments: "" } });
+    if (typeof rawCall["id"] === "string") {
+      existing.id = rawCall["id"];
+    }
+    if (typeof rawCall["type"] === "string") {
+      existing.type = rawCall["type"];
+    }
+    const fn = rawCall["function"];
+    if (isRecord(fn)) {
+      if (typeof fn["name"] === "string") {
+        existing.function.name = fn["name"];
+      }
+      if (typeof fn["arguments"] === "string") {
+        existing.function.arguments += fn["arguments"];
+      }
+    }
+  }
+}
+
+function reconstructFromSse(rawBody: string): Record<string, unknown> {
+  let id: string | undefined;
+  let model: string | undefined;
+  let created: number | undefined;
+  let systemFingerprint: string | null = null;
+  let content = "";
+  let reasoning = "";
+  let reasoningDetails: unknown;
+  let finishReason: string | null = null;
+  let usage: unknown;
+  let streamedError: unknown;
+  let sawChoices = false;
+  const toolCalls: StreamToolCallAccumulator[] = [];
+
+  for (const frame of rawBody.split(/\r?\n\r?\n/)) {
+    const data = frame
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (data.length === 0 || data === "[DONE]") {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed)) {
+      continue;
+    }
+    if (parsed["error"] !== undefined) {
+      streamedError = parsed["error"];
+    }
+    if (typeof parsed["id"] === "string") {
+      id = parsed["id"];
+    }
+    if (typeof parsed["model"] === "string") {
+      model = parsed["model"];
+    }
+    if (typeof parsed["created"] === "number") {
+      created = parsed["created"];
+    }
+    if (typeof parsed["system_fingerprint"] === "string") {
+      systemFingerprint = parsed["system_fingerprint"];
+    }
+    if (parsed["usage"] !== undefined) {
+      usage = parsed["usage"];
+    }
+    const choices = parsed["choices"];
+    if (!Array.isArray(choices)) {
+      continue;
+    }
+    sawChoices = true;
+    for (const choice of choices) {
+      if (!isRecord(choice)) {
+        continue;
+      }
+      if (choice["usage"] !== undefined) {
+        usage = choice["usage"];
+      }
+      if (typeof choice["finish_reason"] === "string") {
+        finishReason = choice["finish_reason"];
+      }
+      const source = isRecord(choice["delta"])
+        ? choice["delta"]
+        : choice["message"];
+      if (!isRecord(source)) {
+        continue;
+      }
+      if (typeof source["content"] === "string") {
+        content += source["content"];
+      }
+      if (typeof source["reasoning"] === "string") {
+        reasoning += source["reasoning"];
+      }
+      if (source["reasoning_details"] !== undefined) {
+        reasoningDetails = source["reasoning_details"];
+      }
+      mergeStreamToolCallDelta(toolCalls, source);
+    }
+  }
+
+  const message: Record<string, unknown> = { role: "assistant", content };
+  if (reasoning.length > 0) {
+    message["reasoning"] = reasoning;
+  }
+  if (reasoningDetails !== undefined) {
+    message["reasoning_details"] = reasoningDetails;
+  }
+  if (toolCalls.length > 0) {
+    message["tool_calls"] = toolCalls.map((call) => ({
+      id: call.id,
+      type: call.type ?? "function",
+      function: {
+        name: call.function.name,
+        arguments: call.function.arguments,
+      },
+    }));
+  }
+
+  return {
+    id: id ?? "",
+    model: model ?? "",
+    object: "chat.completion",
+    created: created ?? Math.floor(Date.now() / 1000),
+    system_fingerprint: systemFingerprint,
+    choices: sawChoices
+      ? [{ index: 0, message, finish_reason: finishReason }]
+      : null,
+    ...(usage !== undefined && { usage }),
+    ...(streamedError !== undefined && { error: streamedError }),
+  };
+}
+
+function decodeChatCompletionBody(
+  rawBody: string,
+  identifiers: ResponseIdentifiers
+): Effect<unknown, ModelError> {
+  return looksLikeSse(rawBody)
+    ? succeed(reconstructFromSse(rawBody))
+    : parseJsonBody(rawBody, identifiers);
+}
+
+const RAW_BODY_LOG_LIMIT = 2000;
+
+const errorEnvelopeSchema = z.object({
+  choices: z.array(z.unknown()).nullish(),
+  error: z.object({
+    message: z.string().optional(),
+    code: z.union([z.number(), z.string()]).optional(),
+  }),
+});
 
 function errorEnvelopeError(
   json: unknown,

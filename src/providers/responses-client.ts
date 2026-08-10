@@ -92,8 +92,7 @@ export type ResponsesService = {
 };
 
 function normalizeBaseUrl(baseUrl: string): string {
-  const trimmed = baseUrl.replace(/\/+$/, "");
-  return trimmed.endsWith("/api/v1") ? trimmed : `${trimmed}/api/v1`;
+  return baseUrl.replace(/\/+$/, "");
 }
 
 export function makeResponsesLayer(config: ResponsesConfig): Layer<Responses> {
