@@ -75,7 +75,10 @@ export class UserSimulator {
     this.config = config;
     const raw = config.baseUrl ?? "https://openrouter.ai";
     const trimmed = raw.replace(/\/+$/, "");
-    this.baseUrl = trimmed.endsWith("/api/v1") ? trimmed : `${trimmed}/api/v1`;
+    this.baseUrl =
+      trimmed.endsWith("/v1") || trimmed.endsWith("/openai")
+        ? trimmed
+        : `${trimmed}/api/v1`;
   }
   reset(scenarioInstructions: string, firstAgentMessage: string): void {
     this.messages.length = 0;
@@ -95,11 +98,12 @@ export class UserSimulator {
     const callModelOnce = this.callModelOnce;
     const messages = this.messages;
     const config = this.config;
+    const fallbackModel = config.fallbackModel ?? USER_FALLBACK_MODEL;
     return gen(function* () {
       const response = yield* callModelOnce(config.model).pipe(
         retry(USER_SIM_RESPONSE_RETRY_SCHEDULE),
         catchAll(() =>
-          callModelOnce(USER_FALLBACK_MODEL).pipe(
+          callModelOnce(fallbackModel).pipe(
             retry(USER_SIM_RESPONSE_RETRY_SCHEDULE)
           )
         )

@@ -33,9 +33,15 @@ export interface RunBenchmarkInput {
   readonly benchmarkId: string;
   readonly apiKey: string;
   readonly baseUrl?: string;
+  readonly userSimulator?: {
+    readonly apiKey: string;
+    readonly baseUrl: string;
+    readonly model: string;
+  };
   readonly benchmarkConfig: BenchmarkRunConfig;
   readonly epochs: number;
   readonly maxConcurrency: number;
+  readonly unordered?: boolean | undefined;
   readonly range?: {
     readonly start?: number;
     readonly end?: number;
@@ -68,6 +74,9 @@ export function runBenchmarkById(
     apiKey: input.apiKey,
     benchmarkConfig: input.benchmarkConfig,
     ...(input.baseUrl !== undefined && { baseUrl: input.baseUrl }),
+    ...(input.userSimulator !== undefined && {
+      userSimulator: input.userSimulator,
+    }),
     sessionId: input.sessionId,
     ...(input.datasetRetry !== undefined && {
       datasetRetry: input.datasetRetry,
@@ -89,6 +98,7 @@ export function runBenchmarkById(
   const runConfig: RunConfig = {
     epochs: input.epochs,
     maxConcurrency: input.maxConcurrency,
+    ...(input.unordered !== undefined && { unordered: input.unordered }),
     ...(input.range !== undefined && { range: input.range }),
     ...(benchmark.degradeSolverErrors !== undefined && {
       degradeSolverErrors: benchmark.degradeSolverErrors,

@@ -193,6 +193,7 @@ export interface SolverOpts {
 export interface UserModelConfig {
   readonly apiKey: string;
   readonly model: string;
+  readonly fallbackModel?: string;
   readonly baseUrl?: string;
   readonly sessionId?: string;
 }

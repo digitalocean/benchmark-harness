@@ -33,6 +33,10 @@ import { Either } from "../internal/either";
 import { unknownErrorToString } from "../internal/errors";
 import { isDefinedAndNotNull, isRecord } from "../internal/guards";
 import { wLog } from "../internal/log";
+import {
+  logModelRequestCompleted,
+  logModelRequestStarted,
+} from "../internal/request-log";
 import { parseSchema, z } from "../internal/zod";
 import { recordGenerationId } from "../runtime/generation-ids";
 import type { RetryConfig } from "../runtime/retry";
@@ -47,6 +51,7 @@ export const BENCH_HARNESS_APP_REFERRER =
   "https://bench-harness.openrouter.ai/";
 
 export const BENCH_HARNESS_APP_TITLE = "OpenRouter: Bench Harness";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 export interface OpenRouterModelConfig {
   readonly model: string;
@@ -63,9 +68,7 @@ export function normalizeBaseUrl(baseUrl: string): string {
 export function makeOpenRouterModelLayer(
   config: OpenRouterModelConfig
 ): Layer<Model, never, HttpClient.HttpClient> {
-  const baseUrl = normalizeBaseUrl(
-    config.baseUrl ?? "https://openrouter.ai/api/v1"
-  );
+  const baseUrl = normalizeBaseUrl(config.baseUrl ?? OPENROUTER_BASE_URL);
   return effect(Model)(
     gen(function* () {
       const client = yield* HttpClient.HttpClient;
@@ -114,6 +117,31 @@ function buildAutoRouterPlugin(
   };
 }
 
+function requestSummary(
+  messageCount: number,
+  genConfig: GenerateConfig
+): Readonly<Record<string, unknown>> {
+  return {
+    messages: messageCount,
+    stream: true,
+    ...(genConfig.temperature !== undefined && {
+      temperature: genConfig.temperature,
+    }),
+    ...(genConfig.maxTokens !== undefined && {
+      max_tokens: genConfig.maxTokens,
+    }),
+    ...(genConfig.reasoningEffort !== undefined && {
+      reasoning_effort: genConfig.reasoningEffort,
+    }),
+    ...(genConfig.endpointId !== undefined && {
+      endpoint_id: genConfig.endpointId,
+    }),
+    ...(genConfig.timeoutMs !== undefined && {
+      timeout_ms: genConfig.timeoutMs,
+    }),
+  };
+}
+
 interface GenerateOpts {
   readonly model: string;
   readonly messages: readonly ChatMessage[];
@@ -135,6 +163,9 @@ export function generate(
     "HTTP-Referer": BENCH_HARNESS_APP_REFERRER,
     "X-OpenRouter-Title": BENCH_HARNESS_APP_TITLE,
   };
+  if (opts.baseUrl === OPENROUTER_BASE_URL) {
+    headers["X-OpenRouter-Metadata"] = "enabled";
+  }
   if (genConfig.endpointId !== undefined) {
     headers["X-OR-Endpoint-Id"] = genConfig.endpointId;
   }
@@ -155,8 +186,23 @@ export function generate(
   const autoRouterPlugin = isAutoRouter
     ? buildAutoRouterPlugin(baseModel, genConfig)
     : undefined;
+  const url = `${opts.baseUrl}/chat/completions`;
+  let attempt = 0;
+  let attemptStartedAt = performance.now();
+  let attemptStartedAtIso = new Date().toISOString();
+  let requestId = crypto.randomUUID();
+  let responseBody: string | undefined;
+  let responseStatus: number | undefined;
+  let responseIdentifiers: ModelErrorIdentifiers = {};
   return gen(function* () {
+    attempt += 1;
     const startedAt = performance.now();
+    attemptStartedAt = startedAt;
+    attemptStartedAtIso = new Date().toISOString();
+    requestId = crypto.randomUUID();
+    responseBody = undefined;
+    responseStatus = undefined;
+    responseIdentifiers = {};
     const body = {
       model,
       messages: messages.map(toApiMessage),
@@ -178,12 +224,19 @@ export function generate(
       ...(autoRouterPlugin !== undefined && { plugins: [autoRouterPlugin] }),
       ...genConfig.extraBody,
     };
-    const request = HttpClientRequest.post(
-      `${opts.baseUrl}/chat/completions`
-    ).pipe(
+    const request = HttpClientRequest.post(url).pipe(
       HttpClientRequest.setHeaders(headers),
       HttpClientRequest.bodyUnsafeJson(body)
     );
+    logModelRequestStarted({
+      requestId,
+      sessionId: opts.sessionId,
+      attempt,
+      model,
+      url,
+      startedAt: attemptStartedAtIso,
+      request: requestSummary(messages.length, genConfig),
+    });
     const response = yield* hasTimeout
       ? client.execute(request).pipe(
           timeout(millis(genConfig.timeoutMs!)),
@@ -197,10 +250,13 @@ export function generate(
           )
         )
       : client.execute(request);
+    responseStatus = response.status;
     const identifiers = modelErrorIdentifiersFromHeaders(response.headers);
+    responseIdentifiers = identifiers;
     const retryAfterHeader = response.headers["retry-after"] ?? null;
     if (response.status < 200 || response.status >= 300) {
       const text = yield* response.text;
+      responseBody = text;
       return yield* fail(
         new ModelError({
           status: response.status,
@@ -216,6 +272,7 @@ export function generate(
       );
     }
     const rawBody = yield* response.text;
+    responseBody = rawBody;
     const json = yield* decodeChatCompletionBody(rawBody, identifiers);
     const envelopeError = errorEnvelopeError(
       json,
@@ -226,15 +283,51 @@ export function generate(
       logUnusableBody(rawBody, envelopeError, identifiers);
       return yield* fail(envelopeError);
     }
-    return yield* decodeResult(json, startedAt, identifiers).pipe(
+    const output = yield* decodeResult(json, startedAt, identifiers).pipe(
       tapError((error) =>
         sync(() => {
           logUnusableBody(rawBody, error, identifiers);
         })
       )
     );
+    const providerName = openRouterProviderName(json);
+    logModelRequestCompleted({
+      requestId,
+      sessionId: opts.sessionId,
+      attempt,
+      model,
+      url,
+      startedAt: attemptStartedAtIso,
+      finishedAt: new Date().toISOString(),
+      durationMs: performance.now() - startedAt,
+      status: response.status,
+      ok: true,
+      ...(output.usage !== undefined && { usage: { ...output.usage } }),
+      ...(providerName !== undefined && { providerName }),
+      ...identifiers,
+    });
+    return output;
   }).pipe(
     mapError(toModelError),
+    tapError((error) =>
+      sync(() => {
+        logModelRequestCompleted({
+          requestId,
+          sessionId: opts.sessionId,
+          attempt,
+          model,
+          url,
+          startedAt: attemptStartedAtIso,
+          finishedAt: new Date().toISOString(),
+          durationMs: performance.now() - attemptStartedAt,
+          status: responseStatus ?? error.status,
+          ok: false,
+          response: responseBody,
+          error: error.message,
+          ...responseIdentifiers,
+        });
+      })
+    ),
     retry(rateLimitRetrySchedule(opts.retry ?? {}))
   );
 }
@@ -313,6 +406,7 @@ function reconstructFromSse(rawBody: string): Record<string, unknown> {
   let reasoningDetails: unknown;
   let finishReason: string | null = null;
   let usage: unknown;
+  let openRouterMetadata: unknown;
   let streamedError: unknown;
   let sawChoices = false;
   const toolCalls: StreamToolCallAccumulator[] = [];
@@ -352,6 +446,9 @@ function reconstructFromSse(rawBody: string): Record<string, unknown> {
     }
     if (parsed["usage"] !== undefined) {
       usage = parsed["usage"];
+    }
+    if (parsed["openrouter_metadata"] !== undefined) {
+      openRouterMetadata = parsed["openrouter_metadata"];
     }
     const choices = parsed["choices"];
     if (!Array.isArray(choices)) {
@@ -415,8 +512,33 @@ function reconstructFromSse(rawBody: string): Record<string, unknown> {
       ? [{ index: 0, message, finish_reason: finishReason }]
       : null,
     ...(usage !== undefined && { usage }),
+    ...(openRouterMetadata !== undefined && {
+      openrouter_metadata: openRouterMetadata,
+    }),
     ...(streamedError !== undefined && { error: streamedError }),
   };
+}
+
+function openRouterProviderName(json: unknown): string | undefined {
+  if (!isRecord(json) || !isRecord(json["openrouter_metadata"])) {
+    return undefined;
+  }
+  const metadata = json["openrouter_metadata"];
+  const legacyProviderName = metadata["provider_name"] ?? metadata["provider"];
+  if (typeof legacyProviderName === "string") {
+    return legacyProviderName;
+  }
+  const attempts = metadata["attempts"];
+  if (!Array.isArray(attempts)) {
+    return undefined;
+  }
+  for (let index = attempts.length - 1; index >= 0; index -= 1) {
+    const attempt = attempts[index];
+    if (isRecord(attempt) && typeof attempt["provider"] === "string") {
+      return attempt["provider"];
+    }
+  }
+  return undefined;
 }
 
 function decodeChatCompletionBody(

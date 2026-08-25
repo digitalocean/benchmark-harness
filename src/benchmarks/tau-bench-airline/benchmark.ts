@@ -31,6 +31,26 @@ export const TAU_BENCH_AIRLINE_TEMPERATURE = TAU_BENCH_AIRLINE_META.temperature;
 
 export const TAU_BENCH_AIRLINE_ID = TAU_BENCH_AIRLINE_META.id;
 
+const DIGITALOCEAN_INFERENCE_BASE_URLS = new Set([
+  "https://inference.do-ai.run/v1",
+  "https://inference.do-ai-test.run/v1",
+]);
+
+export const DIGITALOCEAN_MODEL_SLUGS: Readonly<Record<string, string>> = {
+  "openai/gpt-5.4-mini": "openai-gpt-5.4-mini",
+};
+
+export function resolveAirlineUserModel(
+  model: string,
+  baseUrl: string | undefined
+): string {
+  const normalizedBaseUrl = baseUrl?.replace(/\/+$/, "");
+  return normalizedBaseUrl !== undefined &&
+    DIGITALOCEAN_INFERENCE_BASE_URLS.has(normalizedBaseUrl)
+    ? (DIGITALOCEAN_MODEL_SLUGS[model] ?? model)
+    : model;
+}
+
 export function airlineRecordToSample(
   record: Readonly<Record<string, unknown>>,
   index: number
@@ -89,14 +109,24 @@ function makeAirlineLayer(
       )
     );
   }
+  const defaultUserModel = resolveAirlineUserModel(
+    benchmarkConfig.userModel,
+    input.baseUrl
+  );
+  const userSimulator = input.userSimulator;
   const solverOpts: SolverOpts = {
     ...(benchmarkConfig.endpointId !== undefined && {
       endpointId: benchmarkConfig.endpointId,
     }),
     userModelConfig: {
-      apiKey: input.apiKey,
-      model: benchmarkConfig.userModel,
-      ...(input.baseUrl !== undefined && { baseUrl: input.baseUrl }),
+      apiKey: userSimulator?.apiKey ?? input.apiKey,
+      model: userSimulator?.model ?? defaultUserModel,
+      fallbackModel: userSimulator?.model ?? defaultUserModel,
+      ...(userSimulator !== undefined
+        ? { baseUrl: userSimulator.baseUrl }
+        : input.baseUrl !== undefined
+          ? { baseUrl: input.baseUrl }
+          : {}),
       sessionId: input.sessionId,
     },
     inference: {

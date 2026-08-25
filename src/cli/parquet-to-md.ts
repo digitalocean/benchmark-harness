@@ -10,7 +10,9 @@ import {
 async function main(): Promise<void> {
   const filePath = process.argv[2];
   if (!filePath) {
-    process.stderr.write("Usage: bun src/cli/parquet-to-md.ts <path.parquet>\n");
+    process.stderr.write(
+      "Usage: bun src/cli/parquet-to-md.ts <path.parquet>\n"
+    );
     process.exitCode = 1;
     return;
   }
@@ -63,10 +65,15 @@ async function main(): Promise<void> {
       noAnswer: 0,
       skipped: 0,
     };
-    if (row.score_value === "C") entry.correct++;
-    else if (row.score_value === "I" && row.answer !== null) entry.wrong++;
-    else if (row.score_value === "I" && row.answer === null) entry.noAnswer++;
-    else entry.skipped++;
+    if (row.score_value === "C") {
+      entry.correct++;
+    } else if (row.score_value === "I" && row.answer !== null) {
+      entry.wrong++;
+    } else if (row.score_value === "I" && row.answer === null) {
+      entry.noAnswer++;
+    } else {
+      entry.skipped++;
+    }
     subdomainMap.set(subdomain, entry);
   }
 
@@ -96,7 +103,7 @@ ${failedRows
     let type: string;
     if (r.answer === null) {
       const msgs = r.messages ? JSON.parse(r.messages) : [];
-      const lastMsg = msgs[msgs.length - 1];
+      const lastMsg = msgs.at(-1);
       const responseLen = lastMsg?.content?.length ?? 0;
       type = responseLen === 0 ? "Empty response" : "No answer parsed";
     } else {
@@ -152,7 +159,17 @@ ${failureSection}## All Samples
 
 | Sample | Score | Answer | Explanation |
 |---|---|---|---|
-${rows.map((r) => `| ${r.sample_id} | ${r.score_value === "C" ? "Correct" : r.answer === null ? "No Answer" : "Wrong"} | ${r.answer ?? "-"} | ${(r.explanation ?? "").slice(0, 80)} |`).join("\n")}
+${rows
+  .map((r) => {
+    let score = "Wrong";
+    if (r.score_value === "C") {
+      score = "Correct";
+    } else if (r.answer === null) {
+      score = "No Answer";
+    }
+    return `| ${r.sample_id} | ${score} | ${r.answer ?? "-"} | ${(r.explanation ?? "").slice(0, 80)} |`;
+  })
+  .join("\n")}
 `;
 
   process.stdout.write(md);

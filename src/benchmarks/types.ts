@@ -13,6 +13,11 @@ import type { BenchmarkRunConfig } from "./benchmark-config";
 export interface BenchmarkRunInput {
   readonly apiKey: string;
   readonly baseUrl?: string;
+  readonly userSimulator?: {
+    readonly apiKey: string;
+    readonly baseUrl: string;
+    readonly model: string;
+  };
   readonly benchmarkConfig: BenchmarkRunConfig;
   readonly sessionId: string;
   readonly datasetRetry?: RetryConfig;

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { Presets, SingleBar } from "cli-progress";
@@ -24,6 +25,30 @@ import { parseSchema } from "../internal/zod";
 import { makeLocalResultStore } from "../results/result-store";
 import { datasetSizeById, runBenchmarkById } from "../runner/run-by-id";
 
+export function writeProgress(
+  processed: number,
+  total: number,
+  skipped = 0
+): void {
+  const path = process.env["BENCH_PROGRESS_FILE"];
+  if (path === undefined) {
+    return;
+  }
+  const temporaryPath = `${path}.${process.pid}.tmp`;
+  writeFileSync(
+    temporaryPath,
+    `${JSON.stringify({
+      processed,
+      completed: processed - skipped,
+      skipped,
+      total,
+      percentage: total === 0 ? 100 : (processed / total) * 100,
+      updatedAt: new Date().toISOString(),
+    })}\n`
+  );
+  renameSync(temporaryPath, path);
+}
+
 interface CliArgs {
   readonly benchmark: string;
   readonly model: string | undefined;
@@ -32,6 +57,7 @@ interface CliArgs {
   readonly end?: number;
   readonly epochs?: number;
   readonly concurrency: number;
+  readonly unordered: boolean;
   readonly endpointId?: string;
   readonly solverConfig?: string;
   readonly artifactDir?: string;
@@ -57,6 +83,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     end: num("--end"),
     epochs: num("--epochs"),
     concurrency: num("--concurrency") ?? 8,
+    unordered: argv.includes("--unordered"),
     endpointId: get("--endpoint-id"),
     solverConfig: get("--solver-config"),
     artifactDir: get("--artifact-dir"),
@@ -125,6 +152,29 @@ function resolveApiKey(): string {
   return keyValue;
 }
 
+export function tauAirlineUserSimulatorFromEnv(
+  env: NodeJS.ProcessEnv = process.env
+):
+  | {
+      readonly apiKey: string;
+      readonly baseUrl: string;
+      readonly model: string;
+    }
+  | undefined {
+  const apiKey = env["TAU_AIRLINE_USER_SIMULATOR_API_KEY"]?.trim();
+  if (!apiKey) {
+    return undefined;
+  }
+  return {
+    apiKey,
+    baseUrl:
+      env["TAU_AIRLINE_USER_SIMULATOR_BASE_URL"]?.trim() ||
+      "https://generativelanguage.googleapis.com/v1beta/openai",
+    model:
+      env["TAU_AIRLINE_USER_SIMULATOR_MODEL"]?.trim() || "gemini-2.5-flash",
+  };
+}
+
 function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const benchmark = getBenchmark(args.benchmark);
@@ -134,6 +184,10 @@ function main(): Promise<void> {
     );
   }
   const apiKey = resolveApiKey();
+  const tauAirlineUserSimulator =
+    args.benchmark === "tau_bench_verified_airline"
+      ? tauAirlineUserSimulatorFromEnv()
+      : undefined;
   const baseUrl = getOrNull(
     runSync(string("OPENROUTER_BASE_URL").pipe(option))
   );
@@ -172,7 +226,7 @@ function main(): Promise<void> {
         costTier: args.costTier,
       });
       process.stderr.write(
-        `Running ${args.benchmark}${args.model !== undefined ? ` on ${args.model}` : ""}${args.solverConfig !== undefined ? ` (solver-config=${args.solverConfig})` : ""}${artifactDir !== undefined ? ` (artifact-dir=${artifactDir})` : ""} (epochs=${epochs}, concurrency=${args.concurrency}${range !== undefined ? `, range=${range.start ?? 0}..${range.end ?? "end"}` : ""}, session=${sessionId})...\n`
+        `Running ${args.benchmark}${args.model !== undefined ? ` on ${args.model}` : ""}${args.solverConfig !== undefined ? ` (solver-config=${args.solverConfig})` : ""}${artifactDir !== undefined ? ` (artifact-dir=${artifactDir})` : ""} (epochs=${epochs}, concurrency=${args.concurrency}, unordered=${args.unordered}${range !== undefined ? `, range=${range.start ?? 0}..${range.end ?? "end"}` : ""}, session=${sessionId})...\n`
       );
       const total = yield* promise(() =>
         resolveTotalEvaluations(args.benchmark, range, epochs)
@@ -187,23 +241,38 @@ function main(): Promise<void> {
       let currentSample = "";
       if (total !== undefined) {
         bar.start(total, 0, { sample: "" });
+        writeProgress(0, total);
       }
       const result = yield* promise(() =>
         runBenchmarkById({
           benchmarkId: args.benchmark,
           apiKey,
+          ...(tauAirlineUserSimulator !== undefined && {
+            userSimulator: tauAirlineUserSimulator,
+          }),
           benchmarkConfig: benchmarkRunConfig,
           epochs,
           maxConcurrency: args.concurrency,
+          unordered: args.unordered,
+          ...(benchmarkRunConfig.benchmarkId === "gpqa_diamond" &&
+            benchmarkRunConfig.maxRetries !== undefined && {
+              modelRetry: { maxRetries: benchmarkRunConfig.maxRetries },
+            }),
           ...(baseUrl && { baseUrl }),
           ...(range !== undefined && { range }),
           sessionId,
           resultStore: makeLocalResultStore({
-            dir: join(process.cwd(), "bench-results"),
+            dir:
+              process.env["BENCH_RESULTS_DIR"] ??
+              join(process.cwd(), "bench-results"),
           }),
           progressReporter: makeProgressReporter({
-            onSampleComplete: (completed) =>
-              bar.update(completed, { sample: currentSample }),
+            onSampleComplete: (processed, skipped) => {
+              bar.update(processed, { sample: currentSample });
+              if (total !== undefined) {
+                writeProgress(processed, total, skipped);
+              }
+            },
             onSampleStart: (event) => {
               currentSample = `#${event.sampleIndex}`;
               bar.update({ sample: currentSample });
@@ -344,12 +413,13 @@ export function buildBenchmarkConfig(opts: {
     opts;
   switch (benchmarkId) {
     case "gpqa_diamond": {
-      return {
+      return buildSchemaValidatedConfig({
         benchmarkId: "gpqa_diamond",
         model: requireModel("gpqa_diamond", model),
-        ...(endpointId !== undefined && { endpointId }),
-        ...(costTier !== undefined && { costTier }),
-      };
+        endpointId,
+        panelConfig,
+        costTier,
+      });
     }
     case "mmlu_pro": {
       return {

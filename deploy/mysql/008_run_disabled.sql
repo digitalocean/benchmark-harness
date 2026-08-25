@@ -1,0 +1,3 @@
+ALTER TABLE benchmark_runs
+  ADD COLUMN disabled BOOLEAN NOT NULL DEFAULT FALSE
+    AFTER status;

@@ -42,6 +42,54 @@ describe("UserSimulator", () => {
       }
     }
   );
+  it.serial("keeps an OpenAI-compatible /v1 base URL intact", async () => {
+    const requests: CapturedRequest[] = [];
+    const restore = installFetchSequence(
+      [{ choices: [{ message: { content: "Hello" } }] }],
+      requests
+    );
+    try {
+      const simulator = new UserSimulator({
+        apiKey: "sk-test",
+        model: "openai-gpt-5.4-mini",
+        baseUrl: "https://inference.do-ai.run/v1",
+      });
+      simulator.reset("scenario", "Hi");
+      await runPromise(
+        simulator.generateInitial().pipe(provide(FetchHttpClient.layer))
+      );
+
+      expect(requests[0]?.url).toBe(
+        "https://inference.do-ai.run/v1/chat/completions"
+      );
+    } finally {
+      restore();
+    }
+  });
+  it.serial("keeps the Gemini OpenAI-compatible base URL intact", async () => {
+    const requests: CapturedRequest[] = [];
+    const restore = installFetchSequence(
+      [{ choices: [{ message: { content: "Hello" } }] }],
+      requests
+    );
+    try {
+      const simulator = new UserSimulator({
+        apiKey: "gemini-key",
+        model: "gemini-2.5-flash",
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+      });
+      simulator.reset("scenario", "Hi");
+      await runPromise(
+        simulator.generateInitial().pipe(provide(FetchHttpClient.layer))
+      );
+
+      expect(requests[0]?.url).toBe(
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+      );
+    } finally {
+      restore();
+    }
+  });
   it.serial(
     "replays opaque reasoning_details and omits absent details",
     async () => {
@@ -138,7 +186,7 @@ describe("UserSimulator", () => {
           { choices: [{ message: { content: null } }] },
           { choices: [{ message: { content: null } }] },
           {
-            model: "openai/gpt-5.4-mini",
+            model: "openai-gpt-5.4-mini",
             choices: [{ message: { content: "Fallback turn" } }],
           },
         ],
@@ -148,6 +196,7 @@ describe("UserSimulator", () => {
         const simulator = new UserSimulator({
           apiKey: "sk-test",
           model: "openai/gpt-4o-mini",
+          fallbackModel: "openai-gpt-5.4-mini",
           baseUrl: "https://example.test",
         });
         simulator.reset("scenario", "Hi");
@@ -159,7 +208,7 @@ describe("UserSimulator", () => {
         );
         const fallbackRequest = requests[4];
         assert(fallbackRequest);
-        expect(fallbackRequest.body["model"]).toBe("openai/gpt-5.4-mini");
+        expect(fallbackRequest.body["model"]).toBe("openai-gpt-5.4-mini");
         const messages = fallbackRequest.body["messages"];
         assert(Array.isArray(messages));
         const assistant = messages.find(

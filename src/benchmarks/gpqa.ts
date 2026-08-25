@@ -138,6 +138,7 @@ export const GPQA_BENCHMARK: Benchmark = defineChatBenchmark({
         cloudflareVersion: config.cloudflareVersion,
         costTier: config.costTier,
         costQualityTradeoff: config.costQualityTradeoff,
+        pinModel: config.pinModel,
       },
     }),
 });

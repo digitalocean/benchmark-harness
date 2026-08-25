@@ -1,6 +1,9 @@
 import type { Mock } from "bun:test";
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import assert from "node:assert";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { FetchHttpClient } from "@effect/platform";
 import { failureOption } from "effect/Cause";
@@ -44,6 +47,18 @@ const CHAT_RESULT = {
     },
   ],
   usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  openrouter_metadata: {
+    attempt: 1,
+    attempts: [
+      { model: "openai/gpt-4o", provider: "DigitalOcean", status: 200 },
+    ],
+    endpoints: { available: [], total: 0 },
+    is_byok: false,
+    region: null,
+    requested: "openai/gpt-4o",
+    strategy: "direct",
+    summary: "DigitalOcean",
+  },
 };
 
 const CHAT_RESULT_JSON = JSON.stringify(CHAT_RESULT);
@@ -124,6 +139,49 @@ describe("openrouter-model request parity", () => {
       }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
     );
     expect(captured.value?.body["provider"]).toEqual({ sort: "price" });
+    expect(captured.value?.headers["x-openrouter-metadata"]).toBe("enabled");
+  });
+  it("persists request dispatch before response completion", async () => {
+    const captured = newHolder();
+    restore = installFetchCapture(captured);
+    const directory = mkdtempSync(join(tmpdir(), "openrouter-request-events-"));
+    const path = join(directory, "requests.jsonl");
+    const originalPath = process.env["REQUEST_LOG_FILE"];
+    process.env["REQUEST_LOG_FILE"] = path;
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+    });
+    try {
+      await runPromiseExit(
+        gen(function* run() {
+          const model = yield* Model;
+          yield* model.generate(MESSAGES, {});
+        }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+      );
+
+      const events = readFileSync(path, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(events.map((event) => event.event)).toEqual([
+        "started",
+        "completed",
+      ]);
+      expect(events[1]).toMatchObject({
+        status: 200,
+        model: "openai/gpt-4o",
+        provider_name: "DigitalOcean",
+      });
+      expect(events[1]).toHaveProperty("duration_ms");
+    } finally {
+      if (originalPath === undefined) {
+        Reflect.deleteProperty(process.env, "REQUEST_LOG_FILE");
+      } else {
+        process.env["REQUEST_LOG_FILE"] = originalPath;
+      }
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
   it("records the chat completion generation id", async () => {
     const captured = newHolder();

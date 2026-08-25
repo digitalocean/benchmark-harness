@@ -48,6 +48,7 @@ import { Solver } from "./solver";
 export interface RunConfig {
   readonly epochs: number;
   readonly maxConcurrency: number;
+  readonly unordered?: boolean | undefined;
   readonly range?: {
     readonly start?: number;
     readonly end?: number;
@@ -70,6 +71,7 @@ interface SampleEpoch {
 
 interface FoldAccumulator {
   scores: SampleScore[];
+  skipped: number;
   usage: UsageTotals;
 }
 
@@ -142,6 +144,9 @@ function accumulateOutcome(
   item: EvalOutcome
 ): FoldAccumulator {
   acc.scores.push(item.sampleScore);
+  if (item.sampleScore.score.value === ScoreValue.Skipped) {
+    acc.skipped += 1;
+  }
   const u = item.usage;
   acc.usage = {
     inputTokens: acc.usage.inputTokens + (u?.inputTokens ?? 0),
@@ -313,6 +318,7 @@ export function runBenchmark(
       );
       const initialAcc: FoldAccumulator = {
         scores: [],
+        skipped: 0,
         usage: { ...ZERO_USAGE },
       };
       return sampleEpochs.pipe(
@@ -331,13 +337,19 @@ export function runBenchmark(
                 withLogSpan("sample")
               )
             ),
-          { concurrency: config.maxConcurrency }
+          {
+            concurrency: config.maxConcurrency,
+            unordered: config.unordered ?? false,
+          }
         ),
         streamRunFoldEffect(initialAcc, (acc, item) =>
           effectGen(function* () {
             const updated = accumulateOutcome(acc, item);
             const reporter = yield* ProgressReporter;
-            yield* reporter.onSampleComplete(updated.scores.length);
+            yield* reporter.onSampleComplete(
+              updated.scores.length,
+              updated.skipped
+            );
             return updated;
           })
         ),

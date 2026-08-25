@@ -6,7 +6,11 @@ import { MessageRole, ScoreValue } from "../../harness/core";
 import { isRecord } from "../../internal/guards";
 import { benchmarkIds, getBenchmark } from "../registry";
 import { compareActionWithToolCall } from "./action-match";
-import { airlineRecordToSample, TAU_BENCH_AIRLINE_ID } from "./benchmark";
+import {
+  airlineRecordToSample,
+  resolveAirlineUserModel,
+  TAU_BENCH_AIRLINE_ID,
+} from "./benchmark";
 import { seedAirlineDataCache } from "./environment";
 import { evaluateSimulation } from "./evaluator";
 import { airlineScorer } from "./scorer";
@@ -93,10 +97,24 @@ describe("tau_bench_verified_airline registry", () => {
     expect(b?.id).toBe("tau_bench_verified_airline");
     expect(b?.temperature).toBe(0);
     expect(b?.defaultEpochs).toBe(1);
-    expect(b?.userModel).toBe("google/gemini-2.5-flash");
+    expect(b?.userModel).toBe("openai/gpt-5.4-mini");
   });
   it("appears in benchmarkIds()", () => {
     expect(benchmarkIds()).toContain("tau_bench_verified_airline");
+  });
+  it("uses the DigitalOcean user-model slug only for DigitalOcean inference", () => {
+    expect(
+      resolveAirlineUserModel(
+        "openai/gpt-5.4-mini",
+        "https://inference.do-ai.run/v1"
+      )
+    ).toBe("openai-gpt-5.4-mini");
+    expect(
+      resolveAirlineUserModel(
+        "openai/gpt-5.4-mini",
+        "https://openrouter.ai/api/v1"
+      )
+    ).toBe("openai/gpt-5.4-mini");
   });
 });
 describe("airlineRecordToSample", () => {
