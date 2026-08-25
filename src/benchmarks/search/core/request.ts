@@ -1,5 +1,4 @@
 import type {
-  AutoRouterPlugin,
   ProviderPreferences,
   ResponsesRequest,
   WebFetchServerTool,
@@ -12,6 +11,8 @@ import type {
 import type { CostTier, ReasoningEffort } from "../../../harness/constants";
 import type { ProviderSort } from "../../../internal/enums";
 import { definedValues } from "../../../internal/guards";
+import { buildAutoRouterPlugin } from "../../../providers/auto-router-plugin";
+import { responsesMessage } from "../../../providers/responses-model";
 import { BENCHMARK_LEAK_EXCLUDED_DOMAINS } from "./blocklist";
 import type { SearchLaneConfig, WebFetchConfig } from "./config";
 
@@ -30,6 +31,7 @@ export interface SearchRequestOptions {
   readonly sort?: ProviderSort;
   readonly providerOrder?: readonly string[];
   readonly providerOnly?: readonly string[];
+  readonly providerIgnore?: readonly string[];
   readonly allowFallbacks?: boolean;
   readonly costQualityTradeoff?: number;
   readonly costTier?: CostTier;
@@ -40,6 +42,7 @@ function toSearchToolParams(
 ): WebSearchServerToolConfig | undefined {
   const params = definedValues({
     engine: lane.engine === "auto" ? undefined : lane.engine,
+    mode: lane.mode,
     maxResults: lane.maxResults,
     maxTotalResults: lane.maxTotalResults,
     searchContextSize: lane.searchContextSize,
@@ -91,6 +94,7 @@ function buildWebPlugin(lane: SearchLaneConfig): WebSearchPlugin {
     id: "web",
     ...definedValues({
       engine: lane.engine === "auto" ? undefined : lane.engine,
+      mode: lane.mode,
       maxResults: lane.maxResults,
       searchPrompt: lane.searchPrompt,
       includeDomains:
@@ -106,23 +110,14 @@ export function buildSearchRequestBody(
   opts: SearchRequestOptions
 ): ResponsesRequest {
   const { lane } = opts;
-  const autoRouterPlugin: readonly AutoRouterPlugin[] | undefined =
-    opts.model === "openrouter/auto" &&
-    (opts.costQualityTradeoff !== undefined || opts.costTier !== undefined)
-      ? [
-          {
-            id: "auto-router",
-            ...(opts.costQualityTradeoff !== undefined && {
-              costQualityTradeoff: opts.costQualityTradeoff,
-            }),
-            ...(opts.costTier !== undefined && { costTier: opts.costTier }),
-          },
-        ]
-      : undefined;
+  const autoRouterPlugin = buildAutoRouterPlugin(
+    opts.model === "openrouter/auto" ? opts.model : undefined,
+    opts
+  );
   const base: ResponsesRequest = {
     model: opts.model,
     instructions: opts.instructions,
-    input: [{ role: "user" as const, content: opts.problem }],
+    input: [responsesMessage("user", opts.problem)],
     ...definedValues({
       maxOutputTokens: opts.maxOutputTokens,
       temperature: opts.temperature,
@@ -133,6 +128,7 @@ export function buildSearchRequestBody(
         opts.sort !== undefined ||
         opts.providerOrder !== undefined ||
         opts.providerOnly !== undefined ||
+        opts.providerIgnore !== undefined ||
         opts.allowFallbacks !== undefined
           ? (definedValues({
               sort: opts.sort,
@@ -144,13 +140,20 @@ export function buildSearchRequestBody(
                 opts.providerOnly === undefined
                   ? undefined
                   : [...opts.providerOnly],
+              ignore:
+                opts.providerIgnore === undefined
+                  ? undefined
+                  : [...opts.providerIgnore],
               allowFallbacks: opts.allowFallbacks,
             }) satisfies ProviderPreferences)
           : undefined,
     }),
   };
   if (lane.webSearch === "plugin") {
-    const webPlugins = [...(autoRouterPlugin ?? []), buildWebPlugin(lane)];
+    const webPlugins = [
+      ...(autoRouterPlugin === undefined ? [] : [autoRouterPlugin]),
+      buildWebPlugin(lane),
+    ];
     return { ...base, plugins: webPlugins };
   }
   return {
@@ -159,6 +162,6 @@ export function buildSearchRequestBody(
     ...(lane.maxAgentTurns !== undefined && {
       maxToolCalls: lane.maxAgentTurns,
     }),
-    ...(autoRouterPlugin !== undefined && { plugins: [...autoRouterPlugin] }),
+    ...(autoRouterPlugin !== undefined && { plugins: [autoRouterPlugin] }),
   };
 }

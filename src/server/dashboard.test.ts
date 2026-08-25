@@ -365,10 +365,12 @@ describe("benchmark runs dashboard", () => {
       })
     );
 
+    const disableBody = await disable.json();
+    const enableBody = await enable.json();
     expect(disable.status).toBe(200);
-    expect((await disable.json()).disabled).toBe(true);
+    expect(disableBody.disabled).toBe(true);
     expect(enable.status).toBe(200);
-    expect((await enable.json()).disabled).toBe(false);
+    expect(enableBody.disabled).toBe(false);
   });
 
   it("returns catalog models only for supported inference endpoints", async () => {

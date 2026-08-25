@@ -7,6 +7,15 @@ import { ProviderSort } from "../internal/enums";
 import type { ValueOf } from "../internal/guards";
 import { z, zDefaultedText, zInt } from "../internal/zod";
 import {
+  DEFAULT_HARBOR_AGENT,
+  DEFAULT_ORI_CHANNEL,
+  DEFAULT_ORI_INSTALL_URL,
+  DEFAULT_ORI_REASONING_EFFORT,
+  HARBOR_AGENTS,
+  ORI_CHANNELS,
+  ORI_REASONING_EFFORTS,
+} from "./agent-cli/schema";
+import {
   TAU3_BENCH_BANKING_META,
   TAU_BENCH_AIRLINE_META,
 } from "./benchmark-meta";
@@ -16,8 +25,8 @@ import { SearchLaneConfigSchema } from "./search/core/config";
 import { DEFAULT_JUDGE_MODEL, DEFAULT_STEP_LIMIT } from "./swe-atlas/schema";
 import { BankingRetrievalConfigSchema } from "./tau3-bench-banking/retrieval-config";
 import {
-  DEFAULT_PI_PACKAGE,
-  PI_THINKING_LEVELS,
+  DEFAULT_TERMINAL_BENCH_AGENT,
+  TERMINAL_BENCH_AGENTS,
 } from "./terminal-bench/schema";
 import { WandrOptionsSchema } from "./wandr/schema";
 
@@ -37,6 +46,9 @@ export const InferenceOverrideSchema = z.object({
   costTier: z.enum(COST_TIERS).optional(),
   timeoutMs: z.number().optional(),
   sort: z.nativeEnum(ProviderSort).optional(),
+  providerOnly: z.array(z.string()).optional(),
+  providerIgnore: z.array(z.string()).optional(),
+  allowFallbacks: z.boolean().optional(),
   cloudflareVersion: z.string().optional(),
   costQualityTradeoff: z.number().int().min(0).max(10).optional(),
   pinModel: z.boolean().optional(),
@@ -130,9 +142,18 @@ export const TerminalBenchOptionsSchema = z.object({
   maxAgentTimeoutSec: z.number().positive().optional(),
   taskSubset: z.array(z.string()).optional(),
   modalEnv: z.string().default("main"),
-  thinking: z.enum(PI_THINKING_LEVELS).default("medium"),
-  piPackage: z.string().default(DEFAULT_PI_PACKAGE),
   appendSystemPrompt: z.string().optional(),
+  agent: z.enum(TERMINAL_BENCH_AGENTS).default(DEFAULT_TERMINAL_BENCH_AGENT),
+  agentPackage: z.string().optional(),
+  oriInstallUrl: z.string().default(DEFAULT_ORI_INSTALL_URL),
+  agentReasoningEffort: z
+    .enum(ORI_REASONING_EFFORTS)
+    .default(DEFAULT_ORI_REASONING_EFFORT),
+  oriChannel: z.enum(ORI_CHANNELS).default(DEFAULT_ORI_CHANNEL),
+  systemPrompt: z.string().optional(),
+  allowedTools: z.array(z.string()).optional(),
+  disallowedTools: z.array(z.string()).optional(),
+  isolateAgentConfig: z.boolean().default(false),
 });
 
 export const TerminalBenchConfigSchema = z.object({
@@ -168,6 +189,18 @@ const AgenticOptionsSchema = z.object({
   taskSubset: z.array(z.string()).optional(),
   maxAgentTimeoutSec: z.number().positive().optional(),
   modalEnv: z.string().default("main"),
+  agent: z.enum(HARBOR_AGENTS).default(DEFAULT_HARBOR_AGENT),
+  agentPackage: z.string().optional(),
+  oriInstallUrl: z.string().default(DEFAULT_ORI_INSTALL_URL),
+  agentReasoningEffort: z
+    .enum(ORI_REASONING_EFFORTS)
+    .default(DEFAULT_ORI_REASONING_EFFORT),
+  oriChannel: z.enum(ORI_CHANNELS).default(DEFAULT_ORI_CHANNEL),
+  systemPrompt: z.string().optional(),
+  appendSystemPrompt: z.string().optional(),
+  allowedTools: z.array(z.string()).optional(),
+  disallowedTools: z.array(z.string()).optional(),
+  isolateAgentConfig: z.boolean().default(false),
 });
 
 export const SweAtlasOptionsSchema = z.object({
@@ -266,48 +299,61 @@ export type WideSearchBenchmarkConfig = z.infer<
   typeof WideSearchBenchmarkConfigSchema
 >;
 
+export const VgiBenchOptionsSchema = z.object({
+  downscaledVideos: z.boolean().default(false),
+  datasetRevision: z.string().optional(),
+});
+
+export const VgiBenchmarkConfigSchema = z.object({
+  benchmarkId: z.literal("vgi_bench"),
+  ...FixedTemperatureBenchmarkBaseSchema.shape,
+  ...VgiBenchOptionsSchema.shape,
+});
+
+export type VgiBenchmarkConfig = z.infer<typeof VgiBenchmarkConfigSchema>;
+
 export type SearchBenchmarkConfig =
   | BrowseCompBenchmarkConfig
   | HleBenchmarkConfig
   | DsqaBenchmarkConfig
   | WideSearchBenchmarkConfig;
 
-export const BenchmarkRunConfigSchema = z.discriminatedUnion("benchmarkId", [
-  GpqaBenchmarkConfigSchema,
-  MmluProBenchmarkConfigSchema,
-  TauBenchAirlineConfigSchema,
-  Tau3BenchBankingConfigSchema,
-  MmmuProVisionBenchmarkConfigSchema,
-  TerminalBenchConfigSchema,
-  DracoBenchmarkConfigSchema,
-  IfStructBenchmarkConfigSchema,
-  SweAtlasQaConfigSchema,
-  SweAtlasTwConfigSchema,
-  SweAtlasRfConfigSchema,
-  DeepSweConfigSchema,
-  WandrConfigSchema,
-  BrowseCompBenchmarkConfigSchema,
-  HleBenchmarkConfigSchema,
-  DsqaBenchmarkConfigSchema,
-  WideSearchBenchmarkConfigSchema,
-]);
+export const NativeBenchmarkRunConfigSchema = z.discriminatedUnion(
+  "benchmarkId",
+  [
+    GpqaBenchmarkConfigSchema,
+    MmluProBenchmarkConfigSchema,
+    TauBenchAirlineConfigSchema,
+    Tau3BenchBankingConfigSchema,
+    MmmuProVisionBenchmarkConfigSchema,
+    TerminalBenchConfigSchema,
+    DracoBenchmarkConfigSchema,
+    IfStructBenchmarkConfigSchema,
+    SweAtlasQaConfigSchema,
+    SweAtlasTwConfigSchema,
+    SweAtlasRfConfigSchema,
+    DeepSweConfigSchema,
+    WandrConfigSchema,
+    BrowseCompBenchmarkConfigSchema,
+    HleBenchmarkConfigSchema,
+    DsqaBenchmarkConfigSchema,
+    WideSearchBenchmarkConfigSchema,
+    VgiBenchmarkConfigSchema,
+  ]
+);
 
-export type BenchmarkRunConfig = z.infer<typeof BenchmarkRunConfigSchema>;
+export type NativeBenchmarkRunConfig = z.infer<
+  typeof NativeBenchmarkRunConfigSchema
+>;
 
-export type ModelBenchmarkConfig = Extract<
-  BenchmarkRunConfig,
+type NativeModelBenchmarkConfig = Extract<
+  NativeBenchmarkRunConfig,
   {
     model: string;
   }
 >;
 
-export type ModelBenchmarkId = ModelBenchmarkConfig["benchmarkId"];
-
-export function isModelBenchmarkConfig(
-  config: BenchmarkRunConfig
-): config is ModelBenchmarkConfig {
-  return "model" in config;
-}
+export type ModelBenchmarkId = NativeModelBenchmarkConfig["benchmarkId"];
 
 export const BENCHMARK_OPTIONS_SCHEMAS = {
   gpqa_diamond: GpqaOptionsSchema,
@@ -326,7 +372,62 @@ export const BENCHMARK_OPTIONS_SCHEMAS = {
   search_hle: SearchBenchmarkOptionsSchema,
   search_dsqa: SearchBenchmarkOptionsSchema,
   search_widesearch: SearchBenchmarkOptionsSchema,
+  vgi_bench: VgiBenchOptionsSchema,
 } as const satisfies Record<ModelBenchmarkId, z.ZodObject<z.ZodRawShape>>;
+
+const NATIVE_BENCHMARK_ID_SET: ReadonlySet<string> = new Set(
+  NativeBenchmarkRunConfigSchema.options.flatMap((schema) => {
+    const benchmarkId = schema.shape.benchmarkId;
+    return benchmarkId instanceof z.ZodLiteral ? [benchmarkId.value] : [];
+  })
+);
+
+const HostBenchmarkIdSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (benchmarkId) => !NATIVE_BENCHMARK_ID_SET.has(benchmarkId),
+    "Host benchmark ids must not reuse native benchmark ids"
+  );
+
+export const HostBenchmarkRunConfigSchema = z.object({
+  benchmarkId: HostBenchmarkIdSchema,
+  ...ModelBenchmarkBaseSchema.shape,
+  options: z.record(z.string(), z.unknown()).default({}),
+});
+
+export type HostBenchmarkRunConfig = z.infer<
+  typeof HostBenchmarkRunConfigSchema
+>;
+
+export const BenchmarkRunConfigSchema = z.union([
+  NativeBenchmarkRunConfigSchema,
+  HostBenchmarkRunConfigSchema,
+]);
+
+export type BenchmarkRunConfig = z.infer<typeof BenchmarkRunConfigSchema>;
+
+export type ModelBenchmarkConfig =
+  | NativeModelBenchmarkConfig
+  | HostBenchmarkRunConfig;
+
+export function isModelBenchmarkConfig(
+  config: BenchmarkRunConfig
+): config is ModelBenchmarkConfig {
+  return "model" in config;
+}
+
+export function isNativeBenchmarkConfig(
+  config: BenchmarkRunConfig
+): config is NativeBenchmarkRunConfig {
+  return NATIVE_BENCHMARK_ID_SET.has(config.benchmarkId);
+}
+
+export function isHostBenchmarkConfig(
+  config: BenchmarkRunConfig
+): config is HostBenchmarkRunConfig {
+  return !isNativeBenchmarkConfig(config);
+}
 
 const SEARCH_BENCHMARK_ID_SET: ReadonlySet<string> = new Set([
   "search_browsecomp",
@@ -339,6 +440,20 @@ export function isSearchBenchmarkConfig(
   config: BenchmarkRunConfig
 ): config is SearchBenchmarkConfig {
   return SEARCH_BENCHMARK_ID_SET.has(config.benchmarkId);
+}
+
+export function knownBenchmarkOptionKeys(
+  benchmarkId: ModelBenchmarkId
+): ReadonlySet<string> {
+  return new Set([
+    ...Object.keys(BENCHMARK_OPTIONS_SCHEMAS[benchmarkId].shape),
+    ...Object.keys(ModelBenchmarkBaseSchema.shape),
+    "benchmarkId",
+  ]);
+}
+
+export function isModelBenchmarkId(id: string): id is ModelBenchmarkId {
+  return Object.hasOwn(BENCHMARK_OPTIONS_SCHEMAS, id);
 }
 
 export function modelFromConfig(

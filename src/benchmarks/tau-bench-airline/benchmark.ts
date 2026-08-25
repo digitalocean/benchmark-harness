@@ -114,6 +114,7 @@ function makeAirlineLayer(
     input.baseUrl
   );
   const userSimulator = input.userSimulator;
+  const userSimulatorBaseUrl = userSimulator?.baseUrl ?? input.baseUrl;
   const solverOpts: SolverOpts = {
     ...(benchmarkConfig.endpointId !== undefined && {
       endpointId: benchmarkConfig.endpointId,
@@ -122,11 +123,9 @@ function makeAirlineLayer(
       apiKey: userSimulator?.apiKey ?? input.apiKey,
       model: userSimulator?.model ?? defaultUserModel,
       fallbackModel: userSimulator?.model ?? defaultUserModel,
-      ...(userSimulator !== undefined
-        ? { baseUrl: userSimulator.baseUrl }
-        : input.baseUrl !== undefined
-          ? { baseUrl: input.baseUrl }
-          : {}),
+      ...(userSimulatorBaseUrl !== undefined && {
+        baseUrl: userSimulatorBaseUrl,
+      }),
       sessionId: input.sessionId,
     },
     inference: {
@@ -134,6 +133,9 @@ function makeAirlineLayer(
       reasoningEffort: benchmarkConfig.reasoningEffort,
       timeoutMs: benchmarkConfig.timeoutMs,
       sort: benchmarkConfig.sort,
+      providerOnly: benchmarkConfig.providerOnly,
+      providerIgnore: benchmarkConfig.providerIgnore,
+      allowFallbacks: benchmarkConfig.allowFallbacks,
       cloudflareVersion: benchmarkConfig.cloudflareVersion,
       costTier: benchmarkConfig.costTier,
       costQualityTradeoff: benchmarkConfig.costQualityTradeoff,

@@ -3,7 +3,7 @@ import type {
   TextExtendedConfig,
 } from "@openrouter/sdk/models";
 import type { Effect } from "effect/Effect";
-import { fail, flatMap, mapError, retry, succeed } from "effect/Effect";
+import { fail, flatMap, mapError, succeed } from "effect/Effect";
 
 import type { ReasoningEffort } from "../harness/constants";
 import type { ModelUsage } from "../harness/core";
@@ -14,8 +14,9 @@ import {
   toModelError,
   usageFromResponses,
 } from "../providers/responses-client";
+import { responsesMessage } from "../providers/responses-model";
 import type { RetryConfig } from "../runtime/retry";
-import { rateLimitRetrySchedule } from "../runtime/retry";
+import { rateLimitRetrySchedule, retrySalted } from "../runtime/retry";
 
 export interface JudgeConfig {
   readonly judgeModel: string;
@@ -61,7 +62,7 @@ export function judgeCall<T>(
         };
   const body: ResponsesRequest = {
     model: config.judgeModel,
-    input: [{ role: "user" as const, content: spec.userInput }],
+    input: [responsesMessage("user", spec.userInput)],
     ...(text !== undefined && { text }),
     ...(spec.instructions !== undefined && { instructions: spec.instructions }),
     ...(config.temperature !== undefined && {
@@ -77,9 +78,10 @@ export function judgeCall<T>(
       versionOverride: config.versionOverride,
     }),
   };
-  return responses.send(body, sendOptions).pipe(
-    mapError(toModelError),
-    retry(rateLimitRetrySchedule(config.retry ?? {})),
+  return retrySalted(
+    responses.send(body, sendOptions).pipe(mapError(toModelError)),
+    rateLimitRetrySchedule(config.retry ?? {})
+  ).pipe(
     flatMap((result) => {
       const parsed = spec.parseVerdict(result.text);
       const usage = usageFromResponses(result.usage);

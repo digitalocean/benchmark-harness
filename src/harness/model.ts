@@ -24,6 +24,9 @@ export interface GenerateConfig {
   readonly costTier?: CostTier;
   readonly timeoutMs?: number;
   readonly sort?: ProviderSort;
+  readonly providerOnly?: readonly string[];
+  readonly providerIgnore?: readonly string[];
+  readonly allowFallbacks?: boolean;
   readonly cloudflareVersion?: string;
   readonly costQualityTradeoff?: number;
   readonly pinModel?: boolean;

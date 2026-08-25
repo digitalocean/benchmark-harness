@@ -25,21 +25,43 @@ describe("buildSearchRequestBody", () => {
   it("builds a server-tool body with web_search and maxToolCalls", () => {
     const body = buildSearchRequestBody({
       ...BASE,
-      lane: lane({ engine: "exa", maxAgentTurns: 25, maxResults: 10 }),
+      lane: lane({
+        engine: "parallel",
+        mode: "fast",
+        maxAgentTurns: 25,
+        maxResults: 10,
+      }),
     });
     expect(body.model).toBe(BASE.model);
+    expect(body.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: BASE.problem,
+      },
+    ]);
     expect(body.maxToolCalls).toBe(25);
+    expect(body.provider).toBeUndefined();
     expect(body.plugins).toBeUndefined();
     expect(body.tools).toEqual([
       {
         type: "openrouter:web_search",
         parameters: {
-          engine: "exa",
+          engine: "parallel",
+          mode: "fast",
           maxResults: 10,
           excludedDomains: LEAK_BLOCKLIST,
         },
       },
     ]);
+    expect(JSON.parse(responsesRequestToJSON(body))).toMatchObject({
+      tools: [
+        {
+          type: "openrouter:web_search",
+          parameters: { engine: "parallel", mode: "fast" },
+        },
+      ],
+    });
   });
   it("defaults the leak blocklist into web_search params, omitting engine when auto", () => {
     const body = buildSearchRequestBody({ ...BASE, lane: lane({}) });
@@ -76,6 +98,7 @@ describe("buildSearchRequestBody", () => {
       lane: lane({
         webSearch: "plugin",
         engine: "perplexity",
+        mode: "basic",
         maxResults: 5,
         allowedDomains: ["example.com"],
         excludedDomains: ["spam.example"],
@@ -87,6 +110,7 @@ describe("buildSearchRequestBody", () => {
       {
         id: "web",
         engine: "perplexity",
+        mode: "basic",
         maxResults: 5,
         includeDomains: ["example.com"],
         excludeDomains: ["spam.example"],
@@ -178,19 +202,33 @@ describe("buildSearchRequestBody", () => {
       lane: lane({}),
       providerOrder: ["openai", "azure"],
       providerOnly: ["openai", "azure"],
+      providerIgnore: ["bedrock"],
       allowFallbacks: false,
     });
     expect(body.provider).toEqual({
       order: ["openai", "azure"],
       only: ["openai", "azure"],
+      ignore: ["bedrock"],
       allowFallbacks: false,
     });
     expect(JSON.parse(responsesRequestToJSON(body))).toMatchObject({
       provider: {
         order: ["openai", "azure"],
         only: ["openai", "azure"],
+        ignore: ["bedrock"],
         allow_fallbacks: false,
       },
+    });
+  });
+  it("sends the provider object for ignore-only routing", () => {
+    const body = buildSearchRequestBody({
+      ...BASE,
+      lane: lane({}),
+      providerIgnore: ["bedrock"],
+    });
+    expect(body.provider).toEqual({ ignore: ["bedrock"] });
+    expect(JSON.parse(responsesRequestToJSON(body))).toMatchObject({
+      provider: { ignore: ["bedrock"] },
     });
   });
   it("threads search-context and character caps into tool parameters", () => {

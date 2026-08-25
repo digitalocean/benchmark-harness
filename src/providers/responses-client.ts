@@ -4,20 +4,50 @@ import type {
   ResponsesRequest,
   StreamEvents,
 } from "@openrouter/sdk/models";
+import {
+  ConnectionError,
+  InvalidRequestError,
+  RequestAbortedError,
+  RequestTimeoutError,
+  UnexpectedClientError,
+} from "@openrouter/sdk/models/errors/httpclienterrors";
 import { OpenRouterError } from "@openrouter/sdk/models/errors/openroutererror";
+import { SDKValidationError } from "@openrouter/sdk/models/errors/sdkvalidationerror";
+import { streamEventsFromJSON } from "@openrouter/sdk/models/streamevents";
 import { Responses as ResponsesClient } from "@openrouter/sdk/sdk/responses";
 import { Tag } from "effect/Context";
 import { TaggedError } from "effect/Data";
 import type { Effect } from "effect/Effect";
-import { fail, flatMap, map, tryPromise } from "effect/Effect";
+import { all, fail, flatMap, map, sync, tap, tryPromise } from "effect/Effect";
 import type { Layer } from "effect/Layer";
 import { succeed as layerSucceed } from "effect/Layer";
 
 import type { Citation, ModelUsage } from "../harness/core";
 import { ModelError } from "../harness/core";
+import { Either } from "../internal/either";
 import { isRecord } from "../internal/guards";
-import { z } from "../internal/zod";
+import { parseSchema, z } from "../internal/zod";
 import { recordGenerationId } from "../runtime/generation-ids";
+import type { ResponseCacheAttemptState } from "../runtime/response-cache";
+import {
+  buildResponseCacheSalt,
+  getCurrentCallSalt,
+  getCurrentEpoch,
+  getCurrentRetryAttempt,
+  getCurrentRunAttempt,
+  logUnexpectedResponseCacheMiss,
+  RESPONSE_CACHE_HEADER,
+  RESPONSE_CACHE_SALT_HEADER,
+  RESPONSE_CACHE_SOURCE_ID_HEADER,
+  RESPONSE_CACHE_STATUS_HEADER,
+  RESPONSE_CACHE_STATUS_HIT,
+  RESPONSE_CACHE_TTL_HEADER,
+  RESPONSE_CACHE_TTL_SECONDS,
+} from "../runtime/response-cache";
+import {
+  BENCH_HARNESS_APP_REFERRER,
+  BENCH_HARNESS_APP_TITLE,
+} from "./openrouter-model";
 import type { ModelErrorIdentifiers } from "./request-identifiers";
 import {
   appendModelErrorIdentifiers,
@@ -39,10 +69,33 @@ export const ResponsesResultSchema = z.object({
 
 export type ResponsesResult = z.infer<typeof ResponsesResultSchema>;
 
+const RawResponsesTerminalEventSchema = z.object({
+  type: z.union([
+    z.literal("response.completed"),
+    z.literal("response.incomplete"),
+  ]),
+  response: z
+    .object({
+      id: z.string(),
+      model: z.string(),
+      output: z.array(z.record(z.string(), z.unknown())),
+      status: z.string(),
+      usage: z.record(z.string(), z.unknown()).nullable().optional(),
+    })
+    .passthrough(),
+  sequence_number: z.number().int().optional(),
+});
+
+type RawResponsesTerminalEvent = z.infer<
+  typeof RawResponsesTerminalEventSchema
+>;
+
 export interface ResponsesSendOptions {
-  readonly timeoutMs: number;
+  readonly timeoutMs?: number;
   readonly versionOverride?: string;
   readonly extraHeaders?: Readonly<Record<string, string>>;
+  readonly extraBody?: Readonly<Record<string, unknown>>;
+  readonly onResponseIdentifiers?: (identifiers: ModelErrorIdentifiers) => void;
   readonly onStreamEvent?: (event: StreamEvents) => void;
 }
 
@@ -59,6 +112,7 @@ export class ResponsesError extends TaggedError("ResponsesError")<
   {
     readonly message: string;
     readonly status?: number;
+    readonly retryAfterMs?: number;
     readonly retryable: boolean;
   } & ModelErrorIdentifiers
 > {}
@@ -68,6 +122,9 @@ export function toModelError(error: ResponsesError): ModelError {
   return new ModelError({
     message: error.message,
     ...(status !== undefined && { status }),
+    ...(error.retryAfterMs !== undefined && {
+      retryAfterMs: error.retryAfterMs,
+    }),
     ...pickModelErrorIdentifiers(error),
   });
 }
@@ -98,15 +155,24 @@ function normalizeBaseUrl(baseUrl: string): string {
 export function makeResponsesLayer(config: ResponsesConfig): Layer<Responses> {
   const send = (
     body: ResponsesRequest,
-    options: ResponsesSendOptions
+    options: ResponsesSendOptions,
+    attemptState: ResponseCacheAttemptState
   ): Effect<ResponsesResult, ResponsesError> => {
     let identifiers: ModelErrorIdentifiers = {};
+    let isCacheHit = false;
+    let cacheStatus: string | undefined;
+    let cacheSourceId: string | undefined;
     const httpClient = new HTTPClient({
       fetcher: async (input, init) => {
-        const response = await (init === undefined
-          ? fetch(input)
-          : fetch(input, init));
+        const request = await mergeExtraBody(input, init, options.extraBody);
+        const response = await fetch(request);
         identifiers = modelErrorIdentifiersFromFetchHeaders(response.headers);
+        cacheStatus =
+          response.headers.get(RESPONSE_CACHE_STATUS_HEADER) ?? undefined;
+        isCacheHit = cacheStatus === RESPONSE_CACHE_STATUS_HIT;
+        cacheSourceId =
+          response.headers.get(RESPONSE_CACHE_SOURCE_ID_HEADER) ?? undefined;
+        options.onResponseIdentifiers?.(identifiers);
         return response;
       },
     });
@@ -119,6 +185,8 @@ export function makeResponsesLayer(config: ResponsesConfig): Layer<Responses> {
       }),
     });
     const headers: Record<string, string> = {
+      "HTTP-Referer": BENCH_HARNESS_APP_REFERRER,
+      "X-OpenRouter-Title": BENCH_HARNESS_APP_TITLE,
       ...options.extraHeaders,
       ...(options.versionOverride
         ? { [VERSION_OVERRIDE_HEADER]: `api="${options.versionOverride}"` }
@@ -126,12 +194,25 @@ export function makeResponsesLayer(config: ResponsesConfig): Layer<Responses> {
       ...(config.sessionId !== undefined && {
         "x-session-id": config.sessionId,
       }),
+      [RESPONSE_CACHE_HEADER]: "true",
+      [RESPONSE_CACHE_TTL_HEADER]: `${RESPONSE_CACHE_TTL_SECONDS}`,
+      ...(attemptState.cacheSalt !== undefined && {
+        [RESPONSE_CACHE_SALT_HEADER]: attemptState.cacheSalt,
+      }),
     };
     return tryPromise({
       try: async (signal) => {
         identifiers = {};
+        const requestBody = {
+          ...body,
+          ...(body.cacheControl === undefined &&
+            options.extraBody?.["cache_control"] === undefined && {
+              cacheControl: { type: "ephemeral" as const },
+            }),
+          stream: true,
+        } satisfies ResponsesRequest;
         const stream = await client.send(
-          { responsesRequest: { ...body, stream: true } },
+          { responsesRequest: requestBody },
           {
             fetchOptions: { signal },
             ...(options.timeoutMs !== undefined && {
@@ -150,9 +231,26 @@ export function makeResponsesLayer(config: ResponsesConfig): Layer<Responses> {
       },
       catch: (cause) => toResponsesError(cause, identifiers),
     }).pipe(
+      tap(() =>
+        sync(() => {
+          logUnexpectedResponseCacheMiss({
+            ...attemptState,
+            isCacheHit,
+            ...(typeof body.model === "string" && { model: body.model }),
+            ...(cacheStatus !== undefined && { cacheStatus }),
+            ...identifiers,
+          });
+        })
+      ),
       flatMap((result) =>
         result
-          ? recordGenerationId(result.generationId).pipe(map(() => result))
+          ? recordGenerationId(
+              isCacheHit && cacheSourceId !== undefined
+                ? cacheSourceId
+                : result.generationId,
+              isCacheHit,
+              isCacheHit && cacheSourceId !== undefined
+            ).pipe(map(() => result))
           : fail(
               new ResponsesError({
                 message: appendModelErrorIdentifiers(
@@ -166,7 +264,59 @@ export function makeResponsesLayer(config: ResponsesConfig): Layer<Responses> {
       )
     );
   };
-  return layerSucceed(Responses, Responses.of({ send }));
+  const sendWithCacheSalt = (
+    body: ResponsesRequest,
+    options: ResponsesSendOptions
+  ): Effect<ResponsesResult, ResponsesError> => {
+    return all({
+      epoch: getCurrentEpoch,
+      retryAttempt: getCurrentRetryAttempt,
+      runAttempt: getCurrentRunAttempt,
+      callSalt: getCurrentCallSalt,
+    }).pipe(
+      flatMap(({ epoch, retryAttempt, runAttempt, callSalt }) => {
+        const cacheSalt = buildResponseCacheSalt(
+          config.sessionId,
+          epoch,
+          retryAttempt,
+          callSalt
+        );
+        return send(body, options, { runAttempt, retryAttempt, cacheSalt });
+      })
+    );
+  };
+  return layerSucceed(Responses, Responses.of({ send: sendWithCacheSalt }));
+}
+
+async function mergeExtraBody(
+  input: string | URL | Request,
+  init: RequestInit | undefined,
+  extraBody: Readonly<Record<string, unknown>> | undefined
+): Promise<Request> {
+  const request = input instanceof Request ? input : new Request(input, init);
+  if (extraBody === undefined) {
+    return request;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await request.clone().text());
+  } catch {
+    return request;
+  }
+  if (!isRecord(parsed)) {
+    return request;
+  }
+  return new Request(request, {
+    method: "POST",
+    body: JSON.stringify({
+      ...parsed,
+      ...extraBody,
+    }),
+  });
+}
+
+export function unwrapStreamEvent(event: unknown): unknown {
+  return isRecord(event) && isRecord(event["raw"]) ? event["raw"] : event;
 }
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<StreamEvents> {
@@ -176,6 +326,44 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<StreamEvents> {
     Symbol.asyncIterator in value &&
     typeof value[Symbol.asyncIterator] === "function"
   );
+}
+
+function normalizeRawTerminalEvent(
+  event: RawResponsesTerminalEvent
+): RawResponsesTerminalEvent {
+  const usage = event.response.usage;
+  return {
+    ...event,
+    sequence_number: event.sequence_number ?? 0,
+    response: {
+      ...event.response,
+      completed_at: event.response["completed_at"] ?? null,
+      created_at: event.response["created_at"] ?? 0,
+      error: event.response["error"] ?? null,
+      frequency_penalty: event.response["frequency_penalty"] ?? null,
+      incomplete_details: event.response["incomplete_details"] ?? null,
+      instructions: event.response["instructions"] ?? null,
+      metadata: event.response["metadata"] ?? null,
+      parallel_tool_calls: event.response["parallel_tool_calls"] ?? false,
+      presence_penalty: event.response["presence_penalty"] ?? null,
+      temperature: event.response["temperature"] ?? null,
+      tool_choice: event.response["tool_choice"] ?? "auto",
+      tools: event.response["tools"] ?? [],
+      top_p: event.response["top_p"] ?? null,
+      ...(usage !== undefined &&
+        usage !== null && {
+          usage: {
+            ...usage,
+            input_tokens_details: usage["input_tokens_details"] ?? {
+              cached_tokens: 0,
+            },
+            output_tokens_details: usage["output_tokens_details"] ?? {
+              reasoning_tokens: 0,
+            },
+          },
+        }),
+    },
+  };
 }
 
 export async function consumeStream(
@@ -189,12 +377,33 @@ export async function consumeStream(
   try {
     for await (const event of stream) {
       onEvent?.(event);
-      const eventRecord: unknown = event;
-      const eventResponse = isRecord(eventRecord)
-        ? eventRecord["response"]
+      const rawEvent = unwrapStreamEvent(event);
+      const eventResponse = isRecord(rawEvent)
+        ? rawEvent["response"]
         : undefined;
       if (isRecord(eventResponse) && typeof eventResponse["id"] === "string") {
         Object.assign(identifiers, { generationId: eventResponse["id"] });
+      }
+      const rawType = isRecord(rawEvent) ? rawEvent["type"] : undefined;
+      if (rawType === "response.failed") {
+        throw new ResponsesError({
+          message: appendModelErrorIdentifiers(
+            `OpenRouter stream error: ${extractResponseError(eventResponse)}`,
+            identifiers
+          ),
+          retryable: true,
+          ...identifiers,
+        });
+      }
+      if (rawType === "error") {
+        throw new ResponsesError({
+          message: appendModelErrorIdentifiers(
+            `OpenRouter stream error: ${isRecord(rawEvent) ? String(rawEvent["message"]) : String(rawEvent)}`,
+            identifiers
+          ),
+          retryable: true,
+          ...identifiers,
+        });
       }
       switch (event.type) {
         case "response.completed":
@@ -202,25 +411,30 @@ export async function consumeStream(
           finalResponse = event.response;
           break;
         }
-        case "response.failed": {
-          throw new ResponsesError({
-            message: appendModelErrorIdentifiers(
-              `OpenRouter stream error: ${extractResponseError(event.response)}`,
-              identifiers
-            ),
-            retryable: true,
-            ...identifiers,
-          });
-        }
-        case "error": {
-          throw new ResponsesError({
-            message: appendModelErrorIdentifiers(
-              `OpenRouter stream error: ${event.message}`,
-              identifiers
-            ),
-            retryable: true,
-            ...identifiers,
-          });
+        default: {
+          const parsedRawEvent = parseSchema(
+            RawResponsesTerminalEventSchema,
+            rawEvent
+          );
+          if (Either.isLeft(parsedRawEvent)) {
+            break;
+          }
+          const parsedTerminalEvent = streamEventsFromJSON(
+            JSON.stringify(normalizeRawTerminalEvent(parsedRawEvent.right))
+          );
+          if (!parsedTerminalEvent.ok) {
+            break;
+          }
+          switch (parsedTerminalEvent.value.type) {
+            case "response.completed": {
+              finalResponse = parsedTerminalEvent.value.response;
+              break;
+            }
+            case "response.incomplete": {
+              finalResponse = parsedTerminalEvent.value.response;
+              break;
+            }
+          }
         }
       }
     }
@@ -425,14 +639,55 @@ function toResponsesError(
       ...identifiers,
       ...modelErrorIdentifiersFromFetchHeaders(cause.headers),
     };
+    const retryAfterMs = parseRetryAfter(cause.headers.get("retry-after"));
     return new ResponsesError({
       message: appendModelErrorIdentifiers(
         `OpenRouter HTTP ${cause.statusCode}: ${cause.body}`,
         errorIdentifiers
       ),
       status: cause.statusCode,
+      ...(retryAfterMs !== undefined && { retryAfterMs }),
       retryable: cause.statusCode === 429 || cause.statusCode >= 500,
       ...errorIdentifiers,
+    });
+  }
+  if (
+    cause instanceof RequestAbortedError ||
+    cause instanceof RequestTimeoutError
+  ) {
+    return new ResponsesError({
+      message: appendModelErrorIdentifiers(cause.message, identifiers),
+      status: 408,
+      retryable: true,
+      ...identifiers,
+    });
+  }
+  if (
+    cause instanceof ConnectionError ||
+    cause instanceof UnexpectedClientError ||
+    cause instanceof SDKValidationError
+  ) {
+    return new ResponsesError({
+      message: appendModelErrorIdentifiers(cause.message, identifiers),
+      status: 500,
+      retryable: true,
+      ...identifiers,
+    });
+  }
+  if (cause instanceof InvalidRequestError) {
+    return new ResponsesError({
+      message: appendModelErrorIdentifiers(cause.message, identifiers),
+      status: 400,
+      retryable: false,
+      ...identifiers,
+    });
+  }
+  if (cause instanceof SyntaxError || cause instanceof z.ZodError) {
+    return new ResponsesError({
+      message: appendModelErrorIdentifiers(cause.message, identifiers),
+      status: 500,
+      retryable: true,
+      ...identifiers,
     });
   }
   if (cause instanceof TypeError) {
@@ -454,6 +709,7 @@ function toResponsesError(
         "Wall-clock timeout (request aborted)",
         identifiers
       ),
+      status: 408,
       retryable: true,
       ...identifiers,
     });
@@ -466,4 +722,12 @@ function toResponsesError(
     retryable: false,
     ...identifiers,
   });
+}
+
+function parseRetryAfter(value: string | null): number | undefined {
+  if (value === null) {
+    return undefined;
+  }
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1e3 : undefined;
 }

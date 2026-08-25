@@ -1,9 +1,10 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { strict as assert } from "node:assert";
 import { readFile } from "node:fs/promises";
 
 import type { StreamEvents } from "@openrouter/sdk/models";
 import { OpenRouterError } from "@openrouter/sdk/models/errors/openroutererror";
+import { streamEventsFromJSON } from "@openrouter/sdk/models/streamevents";
 import { failureOption } from "effect/Cause";
 import {
   flatMap,
@@ -18,9 +19,11 @@ import { assertFailure } from "../../test/helpers/exit-asserts";
 import { assertRight } from "../internal/testing";
 import { parseSchema, z } from "../internal/zod";
 import {
+  getCollectedGenerationIdEntries,
   getCollectedGenerationIds,
   resetGenerationIds,
 } from "../runtime/generation-ids";
+import { setCurrentEpoch, withRunAttempt } from "../runtime/response-cache";
 import type { ModelErrorIdentifiers } from "./request-identifiers";
 import {
   consumeStream,
@@ -61,6 +64,21 @@ async function readStreamFixture(): Promise<string> {
     ),
     "utf8"
   );
+}
+
+async function readUnknownTerminalFixture(): Promise<StreamEvents> {
+  const raw = await readFile(
+    new URL(
+      "../../test/fixtures/anthropic-responses-unknown-terminal.json",
+      import.meta.url
+    ),
+    "utf8"
+  );
+  const parsed = streamEventsFromJSON(raw);
+  if (!parsed.ok) {
+    throw parsed.error;
+  }
+  return parsed.value;
 }
 describe("extractMessageText", () => {
   it("concatenates output_text from message items", () => {
@@ -216,6 +234,29 @@ describe("usageFromResponses", () => {
   });
 });
 describe("consumeStream", () => {
+  it("accepts an SDK-unknown terminal event from its raw payload", async () => {
+    const event = await readUnknownTerminalFixture();
+    expect(event).toMatchObject({
+      type: "UNKNOWN",
+      isUnknown: true,
+    });
+    async function* stream(): AsyncGenerator<StreamEvents> {
+      yield event;
+    }
+
+    const result = await consumeStream(stream());
+
+    expect(result).toMatchObject({
+      id: "resp_gen-1786655075-eVP4Gc0sViFYYwAW3jR0",
+      model: "anthropic/claude-opus-4.8",
+      status: "completed",
+      usage: {
+        inputTokens: 414,
+        outputTokens: 69,
+        totalTokens: 483,
+      },
+    });
+  });
   it("forwards every stream event to onEvent, including the terminal one", async () => {
     const events: StreamEvents[] = [
       {
@@ -328,14 +369,21 @@ describe("consumeStream", () => {
   });
 });
 describe("makeResponsesLayer", () => {
-  it("records the generation id from a completed response", async () => {
+  it("records generation ids and applies default or explicit prompt caching", async () => {
     const originalFetch = globalThis.fetch;
     const stream = await readStreamFixture();
-    globalThis.fetch = async () =>
-      new Response(stream, {
+    const capturedBodies: unknown[] = [];
+    let capturedHeaders: Headers | undefined;
+    globalThis.fetch = async (input, init) => {
+      const request =
+        input instanceof Request ? input : new Request(input, init);
+      capturedBodies.push(await request.clone().json());
+      capturedHeaders = request.headers;
+      return new Response(stream, {
         status: 200,
         headers: { "content-type": "text/event-stream" },
       });
+    };
     try {
       const ids = await runPromise(
         resetGenerationIds.pipe(
@@ -345,6 +393,15 @@ describe("makeResponsesLayer", () => {
               yield* responses.send(
                 { model: "m", input: [] },
                 { timeoutMs: 1000 }
+              );
+              yield* responses.send(
+                { model: "m", input: [] },
+                {
+                  timeoutMs: 1000,
+                  extraBody: {
+                    cache_control: { type: "ephemeral", ttl: "1h" },
+                  },
+                }
               );
             })
           ),
@@ -358,6 +415,65 @@ describe("makeResponsesLayer", () => {
         )
       );
       expect(ids).toEqual(["gen-1784161874-CXX4U5I6Ej7Z5hTnf0wU"]);
+      expect(capturedBodies[0]).toMatchObject({
+        cache_control: { type: "ephemeral" },
+        stream: true,
+      });
+      expect(capturedBodies[1]).toMatchObject({
+        cache_control: { type: "ephemeral", ttl: "1h" },
+        stream: true,
+      });
+      expect(capturedHeaders?.get("http-referer")).toBe(
+        "https://bench-harness.openrouter.ai/"
+      );
+      expect(capturedHeaders?.get("x-openrouter-title")).toBe(
+        "OpenRouter: Bench Harness"
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+  it("records the cache source id from the response header on cache hits", async () => {
+    const originalFetch = globalThis.fetch;
+    const stream = await readStreamFixture();
+    globalThis.fetch = async () =>
+      new Response(stream, {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-openrouter-cache-status": "HIT",
+          "x-openrouter-cache-source-id": "gen-source",
+        },
+      });
+    try {
+      const entries = await runPromise(
+        resetGenerationIds.pipe(
+          flatMap(() =>
+            gen(function* run() {
+              const responses = yield* Responses;
+              yield* responses.send(
+                { model: "m", input: [] },
+                { timeoutMs: 1000 }
+              );
+            })
+          ),
+          flatMap(() => getCollectedGenerationIdEntries),
+          provide(
+            makeResponsesLayer({
+              apiKey: "sk-test",
+              baseUrl: "https://example.test",
+            })
+          )
+        )
+      );
+      expect(entries).toEqual([
+        {
+          id: "gen-source",
+          isCacheHit: true,
+          countsTowardUsage: true,
+          isResolvedSource: true,
+        },
+      ]);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -397,6 +513,134 @@ describe("makeResponsesLayer", () => {
       expect(error.message).toContain("cf_ray=ray-123");
       expect(error.message).toContain("x_request_id=req-456");
     } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+  it("classifies malformed SSE as a retryable response failure", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("data: {not-json}\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    try {
+      const exit = await runPromiseExit(
+        gen(function* run() {
+          const responses = yield* Responses;
+          return yield* responses.send(
+            { model: "m", input: [] },
+            { timeoutMs: 1000 }
+          );
+        }).pipe(
+          provide(
+            makeResponsesLayer({
+              apiKey: "sk-test",
+              baseUrl: "https://example.test",
+            })
+          )
+        )
+      );
+      assertFailure(exit);
+      const error = getOrThrow(failureOption(exit.cause));
+      expect(error.status).toBe(500);
+      expect(error.retryable).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+  it("sends response-cache headers with an epoch-scoped salt", async () => {
+    const originalFetch = globalThis.fetch;
+    const stream = await readStreamFixture();
+    const capturedBodies: unknown[] = [];
+    let capturedHeaders: Headers | undefined;
+    globalThis.fetch = async (input, init) => {
+      const request =
+        input instanceof Request ? input : new Request(input, init);
+      capturedBodies.push(await request.clone().json());
+      capturedHeaders = request.headers;
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    };
+    try {
+      await runPromise(
+        gen(function* run() {
+          yield* setCurrentEpoch(2);
+          const responses = yield* Responses;
+          yield* responses.send(
+            { model: "m", input: [] },
+            { timeoutMs: 1000, extraBody: { top_k: 5 } }
+          );
+        }).pipe(
+          provide(
+            makeResponsesLayer({
+              apiKey: "sk-test",
+              baseUrl: "https://example.test",
+              sessionId: "wf-123",
+            })
+          )
+        )
+      );
+      expect(capturedHeaders?.get("x-openrouter-cache")).toBe("true");
+      expect(capturedHeaders?.get("x-openrouter-cache-salt")).toBe(
+        "wf-123:epoch-2"
+      );
+      expect(capturedBodies[0]).toMatchObject({
+        top_k: 5,
+      });
+      expect(capturedBodies[0]).not.toHaveProperty("cache_salt");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+  it("warns when a retried run misses the response cache", async () => {
+    const originalFetch = globalThis.fetch;
+    const stream = await readStreamFixture();
+    globalThis.fetch = async () =>
+      new Response(stream, {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-openrouter-cache-status": "MISS",
+        },
+      });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await runPromise(
+        withRunAttempt(
+          2,
+          gen(function* run() {
+            yield* setCurrentEpoch(2);
+            const responses = yield* Responses;
+            yield* responses.send(
+              { model: "m", input: [] },
+              { timeoutMs: 1000 }
+            );
+          })
+        ).pipe(
+          provide(
+            makeResponsesLayer({
+              apiKey: "sk-test",
+              baseUrl: "https://example.test",
+              sessionId: "wf-123",
+            })
+          )
+        )
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [message, context] = warn.mock.calls[0] ?? [];
+      expect(message).toBe(
+        "Expected response cache hit on run retry but missed"
+      );
+      expect(context).toMatchObject({
+        run_attempt: 2,
+        cache_salt: "wf-123:epoch-2",
+        cache_status: "MISS",
+        model: "m",
+      });
+    } finally {
+      warn.mockRestore();
       globalThis.fetch = originalFetch;
     }
   });

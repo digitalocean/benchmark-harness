@@ -28,9 +28,11 @@ import { Model } from "../harness/model";
 import { ProviderSort } from "../internal/enums";
 import { isRecord } from "../internal/guards";
 import {
+  getCollectedGenerationIdEntries,
   getCollectedGenerationIds,
   resetGenerationIds,
 } from "../runtime/generation-ids";
+import { setCurrentEpoch, withRunAttempt } from "../runtime/response-cache";
 import { makeOpenRouterModelLayer } from "./openrouter-model";
 
 const CHAT_RESULT = {
@@ -62,6 +64,21 @@ const CHAT_RESULT = {
 };
 
 const CHAT_RESULT_JSON = JSON.stringify(CHAT_RESULT);
+
+const CHAT_RESULT_WITH_RAW_USAGE = {
+  ...CHAT_RESULT,
+  choices: [
+    {
+      ...CHAT_RESULT.choices[0],
+      logprobs: null,
+    },
+  ],
+  usage: {
+    ...CHAT_RESULT.usage,
+    cost: 0.25,
+    completion_tokens_details: { reasoning_tokens: 3 },
+  },
+};
 
 const REASONING_CHAT_RESULT = {
   ...CHAT_RESULT,
@@ -140,6 +157,7 @@ describe("openrouter-model request parity", () => {
     );
     expect(captured.value?.body["provider"]).toEqual({ sort: "price" });
     expect(captured.value?.headers["x-openrouter-metadata"]).toBe("enabled");
+    expect(captured.value?.body["provider"]).not.toHaveProperty("ignore");
   });
   it("persists request dispatch before response completion", async () => {
     const captured = newHolder();
@@ -183,6 +201,73 @@ describe("openrouter-model request parity", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+  it("sends provider.only with fallbacks disabled on pinned runs", async () => {
+    const captured = newHolder();
+    restore = installFetchCapture(captured);
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+    });
+    await runPromiseExit(
+      gen(function* run() {
+        const model = yield* Model;
+        yield* model.generate(MESSAGES, {
+          providerOnly: ["google-vertex"],
+          providerIgnore: ["azure"],
+          allowFallbacks: false,
+        });
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    expect(captured.value?.body["provider"]).toEqual({
+      only: ["google-vertex"],
+      ignore: ["azure"],
+      allow_fallbacks: false,
+    });
+  });
+  it("merges sort with provider.only on pinned runs", async () => {
+    const captured = newHolder();
+    restore = installFetchCapture(captured);
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+    });
+    await runPromiseExit(
+      gen(function* run() {
+        const model = yield* Model;
+        yield* model.generate(MESSAGES, {
+          sort: ProviderSort.Price,
+          providerOnly: ["google-vertex"],
+          providerIgnore: ["azure"],
+          allowFallbacks: false,
+        });
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    expect(captured.value?.body["provider"]).toEqual({
+      sort: "price",
+      only: ["google-vertex"],
+      ignore: ["azure"],
+      allow_fallbacks: false,
+    });
+  });
+  it("sends provider.ignore without other provider preferences", async () => {
+    const captured = newHolder();
+    restore = installFetchCapture(captured);
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+    });
+    await runPromiseExit(
+      gen(function* run() {
+        const model = yield* Model;
+        yield* model.generate(MESSAGES, {
+          providerIgnore: ["azure"],
+        });
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    expect(captured.value?.body["provider"]).toEqual({
+      ignore: ["azure"],
+    });
+  });
   it("records the chat completion generation id", async () => {
     const captured = newHolder();
     restore = installFetchCapture(captured);
@@ -204,6 +289,85 @@ describe("openrouter-model request parity", () => {
     );
     expect(ids).toEqual(["1"]);
   });
+  it("records the cache source id from the response header on cache hits", async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(CHAT_RESULT_JSON, {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-openrouter-cache-status": "HIT",
+          "x-openrouter-cache-source-id": "gen-source",
+        },
+      })) as typeof fetch;
+    try {
+      const layer = makeOpenRouterModelLayer({
+        model: "openai/gpt-4o",
+        apiKey: "sk-test",
+      });
+      const entries = await runPromise(
+        resetGenerationIds.pipe(
+          flatMap(() =>
+            gen(function* run() {
+              const model = yield* Model;
+              yield* model.generate(MESSAGES, {});
+            })
+          ),
+          flatMap(() => getCollectedGenerationIdEntries),
+          provide(layer.pipe(layerProvide(FetchHttpClient.layer)))
+        )
+      );
+      expect(entries).toEqual([
+        {
+          id: "gen-source",
+          isCacheHit: true,
+          countsTowardUsage: true,
+          isResolvedSource: true,
+        },
+      ]);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+  it("records the dummy id when a cache hit has no source id header", async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(CHAT_RESULT_JSON, {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-openrouter-cache-status": "HIT",
+        },
+      })) as typeof fetch;
+    try {
+      const layer = makeOpenRouterModelLayer({
+        model: "openai/gpt-4o",
+        apiKey: "sk-test",
+      });
+      const entries = await runPromise(
+        resetGenerationIds.pipe(
+          flatMap(() =>
+            gen(function* run() {
+              const model = yield* Model;
+              yield* model.generate(MESSAGES, {});
+            })
+          ),
+          flatMap(() => getCollectedGenerationIdEntries),
+          provide(layer.pipe(layerProvide(FetchHttpClient.layer)))
+        )
+      );
+      expect(entries).toEqual([
+        {
+          id: "1",
+          isCacheHit: true,
+          countsTowardUsage: true,
+          isResolvedSource: false,
+        },
+      ]);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
   it("suppresses sort when endpointId is set (pinning overrides sorting)", async () => {
     const captured = newHolder();
     restore = installFetchCapture(captured);
@@ -222,6 +386,45 @@ describe("openrouter-model request parity", () => {
     );
     expect(captured.value?.body["provider"]).toBeUndefined();
     expect(captured.value?.headers["x-or-endpoint-id"]).toBe("ep-1");
+  });
+  it("serializes a video_url content part by url", async () => {
+    const captured = newHolder();
+    restore = installFetchCapture(captured);
+    const layer = makeOpenRouterModelLayer({
+      model: "google/gemini-2.5-flash",
+      apiKey: "sk-test",
+    });
+    const messages = [
+      {
+        role: MessageRole.User,
+        content: "",
+        contentParts: [
+          {
+            type: "video_url" as const,
+            videoUrl: { url: "https://cdn.seldon.global/v/clip.mp4" },
+          },
+          { type: "text" as const, text: "describe the video" },
+        ],
+      },
+    ];
+    await runPromiseExit(
+      gen(function* run() {
+        const model = yield* Model;
+        yield* model.generate(messages, {});
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    const sentMessages = captured.value?.body["messages"] as unknown[];
+    expect(sentMessages).toBeDefined();
+    expect(sentMessages[0]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "video_url",
+          video_url: { url: "https://cdn.seldon.global/v/clip.mp4" },
+        },
+        { type: "text", text: "describe the video" },
+      ],
+    });
   });
   it("sends reasoning_effort, maxTokens, temperature", async () => {
     const captured = newHolder();
@@ -348,6 +551,153 @@ describe("openrouter-model request parity", () => {
     expect(
       captured.value?.headers["cloudflare-workers-version-overrides"]
     ).toBeUndefined();
+  });
+  it("preserves the raw non-streaming response alongside the mapped output", async () => {
+    const captured: CapturedRequest[] = [];
+    restore = installFetchSequence([CHAT_RESULT_WITH_RAW_USAGE], captured);
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+    });
+    const exit = await runPromiseExit(
+      gen(function* run() {
+        const model = yield* Model;
+        return yield* model.generate(MESSAGES, {});
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    assertSuccess(exit);
+    expect(exit.value.rawResponse).toEqual(CHAT_RESULT_WITH_RAW_USAGE);
+    expect(exit.value.completion).toBe("Answer: A");
+    expect(exit.value.message).toEqual({
+      role: MessageRole.Assistant,
+      content: "Answer: A",
+      model: "m",
+    });
+    expect(exit.value.usage).toEqual({
+      inputTokens: 1,
+      outputTokens: 1,
+      totalTokens: 2,
+      reasoningTokens: 3,
+      totalCost: 0.25,
+    });
+  });
+});
+describe("openrouter-model response caching", () => {
+  let restore: (() => void) | undefined;
+  afterEach(() => {
+    restore?.();
+    restore = undefined;
+  });
+  it("always sends the response-cache header", async () => {
+    const captured = newHolder();
+    restore = installFetchCapture(captured);
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+    });
+    await runPromiseExit(
+      gen(function* run() {
+        const model = yield* Model;
+        yield* model.generate(MESSAGES, {});
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    expect(captured.value?.headers["x-openrouter-cache"]).toBe("true");
+  });
+  it("sends a session- and epoch-scoped cache salt header", async () => {
+    const captured = newHolder();
+    restore = installFetchCapture(captured);
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+      sessionId: "wf-123",
+    });
+    await runPromiseExit(
+      gen(function* run() {
+        yield* setCurrentEpoch(1);
+        const model = yield* Model;
+        yield* model.generate(MESSAGES, {});
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    expect(captured.value?.headers["x-openrouter-cache-salt"]).toBe(
+      "wf-123:epoch-1"
+    );
+    expect(captured.value?.body["cache_salt"]).toBeUndefined();
+  });
+  it("varies the cache salt header across epochs", async () => {
+    const captured = newHolder();
+    restore = installFetchCapture(captured);
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+      sessionId: "wf-123",
+    });
+    const salts: unknown[] = [];
+    await runPromiseExit(
+      gen(function* run() {
+        const model = yield* Model;
+        yield* setCurrentEpoch(0);
+        yield* model.generate(MESSAGES, {});
+        salts.push(captured.value?.headers["x-openrouter-cache-salt"]);
+        yield* setCurrentEpoch(1);
+        yield* model.generate(MESSAGES, {});
+        salts.push(captured.value?.headers["x-openrouter-cache-salt"]);
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    expect(salts).toEqual(["wf-123:epoch-0", "wf-123:epoch-1"]);
+  });
+  it("appends the retry attempt to the cache salt header on in-process retries", async () => {
+    const salts: unknown[] = [];
+    const original = globalThis.fetch;
+    let callCount = 0;
+    const stub: typeof fetch = async (input, init) => {
+      const req = input instanceof Request ? input : new Request(input, init);
+      salts.push(req.headers.get("x-openrouter-cache-salt"));
+      callCount += 1;
+      if (callCount === 1) {
+        return new Response(JSON.stringify({ error: { message: "slow" } }), {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "0" },
+        });
+      }
+      return new Response(CHAT_RESULT_JSON, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    globalThis.fetch = stub;
+    restore = () => {
+      globalThis.fetch = original;
+    };
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+      sessionId: "wf-123",
+      retry: { maxRetries: 2, baseDelayMs: 1 },
+    });
+    await runPromiseExit(
+      gen(function* run() {
+        yield* setCurrentEpoch(1);
+        const model = yield* Model;
+        yield* model.generate(MESSAGES, {});
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    expect(salts).toEqual(["wf-123:epoch-1", "wf-123:epoch-1:attempt-1"]);
+  });
+  it("omits the cache salt header when session id and epoch are unset", async () => {
+    const captured = newHolder();
+    restore = installFetchCapture(captured);
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+    });
+    await runPromiseExit(
+      gen(function* run() {
+        const model = yield* Model;
+        yield* model.generate(MESSAGES, {});
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+    expect(captured.value?.headers["x-openrouter-cache-salt"]).toBeUndefined();
+    expect(captured.value?.body["cache_salt"]).toBeUndefined();
   });
 });
 describe("openrouter-model auto-router plugin", () => {
@@ -904,6 +1254,21 @@ describe("openrouter-model 2xx error envelope", () => {
     assertSuccess(exit);
     expect(fetchCalls.count).toBe(1);
   });
+  it("decodes a 200 body that omits required unused fields", async () => {
+    silenceWarnings();
+    const fetchCalls = { count: 0 };
+    const {
+      system_fingerprint: _systemFingerprint,
+      created: _created,
+      object: _object,
+      ...body
+    } = CHAT_RESULT;
+    restore = installBodyFetch(JSON.stringify(body), 1, fetchCalls);
+    const exit = await generateWithRetries(5);
+    assertSuccess(exit);
+    expect(exit.value.completion).toBe("Answer: A");
+    expect(fetchCalls.count).toBe(1);
+  });
   it("treats an envelope with null choices as an error envelope", async () => {
     silenceWarnings();
     const fetchCalls = { count: 0 };
@@ -1099,5 +1464,77 @@ describe("openrouter-model streaming", () => {
         function: { name: "lookup", arguments: '{"q":"kimi"}' },
       },
     ]);
+  });
+});
+
+describe("openrouter-model response cache miss logging", () => {
+  let restore: (() => void) | undefined;
+  let warn: Mock<(...args: unknown[]) => void> | undefined;
+  afterEach(() => {
+    restore?.();
+    restore = undefined;
+    warn?.mockRestore();
+    warn = undefined;
+  });
+  function installCacheStatusFetch(cacheStatus: string): () => void {
+    const original = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(CHAT_RESULT_JSON, {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-openrouter-cache-status": cacheStatus,
+        },
+      });
+    return () => {
+      globalThis.fetch = original;
+    };
+  }
+  function generateOnRunAttempt(
+    runAttempt: number
+  ): Promise<Exit<ModelOutput, ModelError>> {
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+      sessionId: "wf-123",
+    });
+    return runPromiseExit(
+      withRunAttempt(
+        runAttempt,
+        gen(function* run() {
+          const model = yield* Model;
+          return yield* model.generate(MESSAGES, {});
+        })
+      ).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+  }
+  it("warns when a retried run misses the response cache", async () => {
+    warn = spyOn(console, "warn").mockImplementation(() => {});
+    restore = installCacheStatusFetch("MISS");
+    const exit = await generateOnRunAttempt(2);
+    assertSuccess(exit);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message, context] = warn.mock.calls[0] ?? [];
+    expect(message).toBe("Expected response cache hit on run retry but missed");
+    expect(context).toMatchObject({
+      run_attempt: 2,
+      cache_salt: "wf-123",
+      cache_status: "MISS",
+      model: "openai/gpt-4o",
+    });
+  });
+  it("stays silent when a retried run hits the response cache", async () => {
+    warn = spyOn(console, "warn").mockImplementation(() => {});
+    restore = installCacheStatusFetch("HIT");
+    const exit = await generateOnRunAttempt(2);
+    assertSuccess(exit);
+    expect(warn).not.toHaveBeenCalled();
+  });
+  it("stays silent on the first run attempt", async () => {
+    warn = spyOn(console, "warn").mockImplementation(() => {});
+    restore = installCacheStatusFetch("MISS");
+    const exit = await generateOnRunAttempt(1);
+    assertSuccess(exit);
+    expect(warn).not.toHaveBeenCalled();
   });
 });

@@ -8,7 +8,6 @@ import {
   flatMap,
   gen,
   mapError,
-  retry,
   succeed,
   sync,
   tapError,
@@ -39,8 +38,27 @@ import {
 } from "../internal/request-log";
 import { parseSchema, z } from "../internal/zod";
 import { recordGenerationId } from "../runtime/generation-ids";
+import {
+  buildResponseCacheSalt,
+  getCurrentCallSalt,
+  getCurrentEpoch,
+  getCurrentRetryAttempt,
+  getCurrentRunAttempt,
+  logUnexpectedResponseCacheMiss,
+  RESPONSE_CACHE_HEADER,
+  RESPONSE_CACHE_SALT_HEADER,
+  RESPONSE_CACHE_SOURCE_ID_HEADER,
+  RESPONSE_CACHE_STATUS_HEADER,
+  RESPONSE_CACHE_STATUS_HIT,
+  RESPONSE_CACHE_TTL_HEADER,
+  RESPONSE_CACHE_TTL_SECONDS,
+} from "../runtime/response-cache";
 import type { RetryConfig } from "../runtime/retry";
-import { rateLimitRetrySchedule } from "../runtime/retry";
+import { rateLimitRetrySchedule, retrySalted } from "../runtime/retry";
+import {
+  buildAutoRouterPlugin,
+  toWireAutoRouterPlugin,
+} from "./auto-router-plugin";
 import type { ModelErrorIdentifiers } from "./request-identifiers";
 import {
   appendModelErrorIdentifiers,
@@ -91,32 +109,6 @@ export function makeOpenRouterModelLayer(
   );
 }
 
-function buildAutoRouterPlugin(
-  baseModel: string,
-  genConfig: GenerateConfig
-):
-  | {
-      id: "auto-router" | "auto-beta-router";
-      cost_tier?: GenerateConfig["costTier"];
-      cost_quality_tradeoff?: number;
-      pin_model?: boolean;
-    }
-  | undefined {
-  const hasTier = genConfig.costTier !== undefined;
-  const hasCost = genConfig.costQualityTradeoff !== undefined;
-  const hasPin = genConfig.pinModel === true;
-  if (!hasTier && !hasCost && !hasPin) {
-    return undefined;
-  }
-  return {
-    id:
-      baseModel === "openrouter/auto-beta" ? "auto-beta-router" : "auto-router",
-    ...(hasTier && { cost_tier: genConfig.costTier }),
-    ...(hasCost && { cost_quality_tradeoff: genConfig.costQualityTradeoff }),
-    ...(hasPin && { pin_model: true }),
-  };
-}
-
 function requestSummary(
   messageCount: number,
   genConfig: GenerateConfig
@@ -162,6 +154,8 @@ export function generate(
     "Content-Type": "application/json",
     "HTTP-Referer": BENCH_HARNESS_APP_REFERRER,
     "X-OpenRouter-Title": BENCH_HARNESS_APP_TITLE,
+    [RESPONSE_CACHE_HEADER]: "true",
+    [RESPONSE_CACHE_TTL_HEADER]: `${RESPONSE_CACHE_TTL_SECONDS}`,
   };
   if (opts.baseUrl === OPENROUTER_BASE_URL) {
     headers["X-OpenRouter-Metadata"] = "enabled";
@@ -178,24 +172,36 @@ export function generate(
   }
   const sendSort =
     genConfig.sort !== undefined && genConfig.endpointId === undefined;
+  const providerPreferences = {
+    ...(sendSort && { sort: genConfig.sort }),
+    ...(genConfig.providerOnly !== undefined && {
+      only: [...genConfig.providerOnly],
+    }),
+    ...(genConfig.providerIgnore !== undefined && {
+      ignore: [...genConfig.providerIgnore],
+    }),
+    ...(genConfig.allowFallbacks !== undefined && {
+      allow_fallbacks: genConfig.allowFallbacks,
+    }),
+  };
+  const sendProvider = Object.keys(providerPreferences).length > 0;
   const hasTimeout =
     genConfig.timeoutMs !== undefined && genConfig.timeoutMs > 0;
   const baseModel = stripVariantSuffix(model);
-  const isAutoRouter =
-    baseModel === "openrouter/auto" || baseModel === "openrouter/auto-beta";
-  const autoRouterPlugin = isAutoRouter
-    ? buildAutoRouterPlugin(baseModel, genConfig)
-    : undefined;
+  const autoRouterPlugin = buildAutoRouterPlugin(baseModel, genConfig);
+  const wireAutoRouterPlugin =
+    autoRouterPlugin === undefined
+      ? undefined
+      : toWireAutoRouterPlugin(autoRouterPlugin);
   const url = `${opts.baseUrl}/chat/completions`;
-  let attempt = 0;
+  let requestAttempt = 1;
   let attemptStartedAt = performance.now();
   let attemptStartedAtIso = new Date().toISOString();
   let requestId = crypto.randomUUID();
   let responseBody: string | undefined;
   let responseStatus: number | undefined;
   let responseIdentifiers: ModelErrorIdentifiers = {};
-  return gen(function* () {
-    attempt += 1;
+  const attempt = gen(function* () {
     const startedAt = performance.now();
     attemptStartedAt = startedAt;
     attemptStartedAtIso = new Date().toISOString();
@@ -203,6 +209,17 @@ export function generate(
     responseBody = undefined;
     responseStatus = undefined;
     responseIdentifiers = {};
+    const epoch = yield* getCurrentEpoch;
+    const retryAttempt = yield* getCurrentRetryAttempt;
+    requestAttempt = (retryAttempt ?? 0) + 1;
+    const runAttempt = yield* getCurrentRunAttempt;
+    const callSalt = yield* getCurrentCallSalt;
+    const cacheSalt = buildResponseCacheSalt(
+      opts.sessionId,
+      epoch,
+      retryAttempt,
+      callSalt
+    );
     const body = {
       model,
       messages: messages.map(toApiMessage),
@@ -220,18 +237,25 @@ export function generate(
       ...(genConfig.reasoningEffort !== undefined && {
         reasoning_effort: genConfig.reasoningEffort,
       }),
-      ...(sendSort && { provider: { sort: genConfig.sort } }),
-      ...(autoRouterPlugin !== undefined && { plugins: [autoRouterPlugin] }),
+      ...(sendProvider && { provider: providerPreferences }),
+      ...(wireAutoRouterPlugin !== undefined && {
+        plugins: [wireAutoRouterPlugin],
+      }),
       ...genConfig.extraBody,
     };
     const request = HttpClientRequest.post(url).pipe(
-      HttpClientRequest.setHeaders(headers),
+      HttpClientRequest.setHeaders({
+        ...headers,
+        ...(cacheSalt !== undefined && {
+          [RESPONSE_CACHE_SALT_HEADER]: cacheSalt,
+        }),
+      }),
       HttpClientRequest.bodyUnsafeJson(body)
     );
     logModelRequestStarted({
       requestId,
       sessionId: opts.sessionId,
-      attempt,
+      attempt: requestAttempt,
       model,
       url,
       startedAt: attemptStartedAtIso,
@@ -283,7 +307,28 @@ export function generate(
       logUnusableBody(rawBody, envelopeError, identifiers);
       return yield* fail(envelopeError);
     }
-    const output = yield* decodeResult(json, startedAt, identifiers).pipe(
+    const isCacheHit =
+      response.headers[RESPONSE_CACHE_STATUS_HEADER] ===
+      RESPONSE_CACHE_STATUS_HIT;
+    const cacheSourceId = response.headers[RESPONSE_CACHE_SOURCE_ID_HEADER];
+    logUnexpectedResponseCacheMiss({
+      isCacheHit,
+      runAttempt,
+      retryAttempt,
+      cacheSalt,
+      model,
+      ...(response.headers[RESPONSE_CACHE_STATUS_HEADER] !== undefined && {
+        cacheStatus: response.headers[RESPONSE_CACHE_STATUS_HEADER],
+      }),
+      ...identifiers,
+    });
+    const output = yield* decodeResult(
+      json,
+      startedAt,
+      identifiers,
+      isCacheHit,
+      cacheSourceId
+    ).pipe(
       tapError((error) =>
         sync(() => {
           logUnusableBody(rawBody, error, identifiers);
@@ -294,7 +339,7 @@ export function generate(
     logModelRequestCompleted({
       requestId,
       sessionId: opts.sessionId,
-      attempt,
+      attempt: requestAttempt,
       model,
       url,
       startedAt: attemptStartedAtIso,
@@ -314,7 +359,7 @@ export function generate(
         logModelRequestCompleted({
           requestId,
           sessionId: opts.sessionId,
-          attempt,
+          attempt: requestAttempt,
           model,
           url,
           startedAt: attemptStartedAtIso,
@@ -327,9 +372,9 @@ export function generate(
           ...responseIdentifiers,
         });
       })
-    ),
-    retry(rateLimitRetrySchedule(opts.retry ?? {}))
+    )
   );
+  return retrySalted(attempt, rateLimitRetrySchedule(opts.retry ?? {}));
 }
 
 type ResponseIdentifiers = Pick<ModelErrorIdentifiers, "cfRay" | "xRequestId">;
@@ -637,6 +682,14 @@ function toApiContentItem(part: ContentPart) {
         },
       };
     }
+    case "video_url": {
+      return {
+        type: "video_url",
+        video_url: {
+          url: part.videoUrl.url,
+        },
+      };
+    }
     default: {
       return part satisfies never;
     }
@@ -695,9 +748,14 @@ function toApiMessage(message: ChatMessage) {
 function decodeResult(
   raw: unknown,
   startedAt: number,
-  identifiers: ResponseIdentifiers
+  identifiers: ResponseIdentifiers,
+  isCacheHit: boolean,
+  cacheSourceId?: string
 ): Effect<ModelOutput, ModelError> {
-  const parseResult = parseSchema(ChatResult$inboundSchema, raw);
+  const parseResult = parseSchema(
+    ChatResult$inboundSchema,
+    normalizeResultForSchema(raw)
+  );
   if (Either.isLeft(parseResult)) {
     return fail(
       new ModelError({
@@ -732,7 +790,12 @@ function decodeResult(
   const reasoningDetails = extractReasoningDetails(raw);
   const usage = toModelUsage(result.usage);
   const toolCalls = choice.message.toolCalls ?? [];
-  return recordGenerationId(result.id).pipe(
+  const hasSourceId = isCacheHit && cacheSourceId !== undefined;
+  return recordGenerationId(
+    hasSourceId ? cacheSourceId : result.id,
+    isCacheHit,
+    hasSourceId
+  ).pipe(
     flatMap(() =>
       succeed({
         completion,
@@ -746,9 +809,22 @@ function decodeResult(
         },
         generationTimeMs: Math.round(performance.now() - startedAt),
         ...(usage && { usage }),
+        ...(isRecord(raw) && { rawResponse: raw }),
       })
     )
   );
+}
+
+function normalizeResultForSchema(raw: unknown): unknown {
+  if (!isRecord(raw)) {
+    return raw;
+  }
+  return {
+    ...raw,
+    ...(!("system_fingerprint" in raw) && { system_fingerprint: null }),
+    ...(!("created" in raw) && { created: 0 }),
+    ...(!("object" in raw) && { object: "chat.completion" }),
+  };
 }
 
 function extractReasoningDetails(raw: unknown): ReasoningDetails | undefined {

@@ -6,9 +6,20 @@ import {
   succeed as layerSucceed,
 } from "effect/Layer";
 
-import type { BenchmarkRunConfig } from "../benchmarks/benchmark-config";
-import { modelFromConfig } from "../benchmarks/benchmark-config";
+import type {
+  BenchmarkRunConfig,
+  HostBenchmarkRunConfig,
+} from "../benchmarks/benchmark-config";
+import {
+  isNativeBenchmarkConfig,
+  modelFromConfig,
+} from "../benchmarks/benchmark-config";
 import { getBenchmark } from "../benchmarks/registry";
+import type {
+  Benchmark,
+  BenchmarkMetadata,
+  BenchmarkRunInput,
+} from "../benchmarks/types";
 import { Dataset } from "../harness/dataset";
 import type {
   CheckpointStoreService,
@@ -27,10 +38,16 @@ import type { AsyncEither } from "../internal/either";
 import { Either } from "../internal/either";
 import { wLog } from "../internal/log";
 import type { ResultStoreService } from "../results/result-store";
+import {
+  GenerationResolver,
+  makeOpenRouterGenerationResolver,
+} from "../runtime/generation-resolver";
+import { withRunAttempt } from "../runtime/response-cache";
 import type { RetryConfig } from "../runtime/retry";
 
 export interface RunBenchmarkInput {
   readonly benchmarkId: string;
+  readonly hostBenchmark?: Benchmark<HostBenchmarkRunConfig>;
   readonly apiKey: string;
   readonly baseUrl?: string;
   readonly userSimulator?: {
@@ -47,6 +64,7 @@ export interface RunBenchmarkInput {
     readonly end?: number;
   };
   readonly sessionId: string;
+  readonly runAttempt?: number;
   readonly datasetRetry?: RetryConfig;
   readonly progressReporter?: ProgressReporterService;
   readonly checkpointStore?: CheckpointStoreService;
@@ -63,29 +81,11 @@ export interface RunBenchmarkOutput {
 export function runBenchmarkById(
   input: RunBenchmarkInput
 ): AsyncEither<RunBenchmarkOutput, string> {
-  const benchmark = getBenchmark(input.benchmarkId);
-  if (benchmark === undefined) {
-    return Promise.resolve(
-      Either.left(`Unknown benchmark "${input.benchmarkId}"`)
-    );
+  const benchmarkResult = resolveRunBenchmark(input);
+  if (Either.isLeft(benchmarkResult)) {
+    return Promise.resolve(Either.left(benchmarkResult.left));
   }
-  const maxRetries = input.benchmarkConfig.maxRetries;
-  const benchmarkLayer = benchmark.makeLayer({
-    apiKey: input.apiKey,
-    benchmarkConfig: input.benchmarkConfig,
-    ...(input.baseUrl !== undefined && { baseUrl: input.baseUrl }),
-    ...(input.userSimulator !== undefined && {
-      userSimulator: input.userSimulator,
-    }),
-    sessionId: input.sessionId,
-    ...(input.datasetRetry !== undefined && {
-      datasetRetry: input.datasetRetry,
-    }),
-    ...(maxRetries !== undefined && { modelRetry: { maxRetries } }),
-    ...(input.maxOutputTokensCeiling !== undefined && {
-      maxOutputTokensCeiling: input.maxOutputTokensCeiling,
-    }),
-  });
+  const { benchmark, benchmarkLayer } = benchmarkResult.right;
   const progressLayer = layerSucceed(
     ProgressReporter,
     input.progressReporter ?? NOOP_PROGRESS_REPORTER
@@ -107,20 +107,34 @@ export function runBenchmarkById(
       benchmark: input.benchmarkId,
       session_id: input.sessionId,
       ...(model !== undefined && { model }),
+      ...(input.runAttempt !== undefined && {
+        run_attempt: `${input.runAttempt}`,
+      }),
     },
   };
   const fullBenchmarkLayer = benchmarkLayer.pipe(
     layerProvide(FetchHttpClient.layer)
   );
+  const resolverLayer = layerSucceed(
+    GenerationResolver,
+    makeOpenRouterGenerationResolver({
+      apiKey: input.apiKey,
+      ...(input.baseUrl !== undefined && { baseUrl: input.baseUrl }),
+    })
+  );
   const layers = layerMergeAll(
     fullBenchmarkLayer,
     progressLayer,
-    checkpointLayer
+    checkpointLayer,
+    resolverLayer
   );
   const runOpts =
     input.abortSignal !== undefined ? { signal: input.abortSignal } : undefined;
+  const program = runBenchmark(runConfig).pipe(provide(layers));
   return runHarnessPromise(
-    runBenchmark(runConfig).pipe(provide(layers)),
+    input.runAttempt === undefined
+      ? program
+      : withRunAttempt(input.runAttempt, program),
     runOpts
   )
     .then((result) => {
@@ -148,15 +162,105 @@ export function runBenchmarkById(
 }
 
 export function datasetSizeById(
-  benchmarkId: string
+  benchmarkId: string,
+  hostBenchmark?: Benchmark<HostBenchmarkRunConfig>
 ): AsyncEither<number, string> {
-  const benchmark = getBenchmark(benchmarkId);
-  if (benchmark === undefined) {
-    return Promise.resolve(Either.left(`Unknown benchmark "${benchmarkId}"`));
+  const benchmarkResult = resolveBenchmark(benchmarkId, hostBenchmark);
+  if (Either.isLeft(benchmarkResult)) {
+    return Promise.resolve(Either.left(benchmarkResult.left));
   }
+  const benchmark = benchmarkResult.right;
   const datasetLayer = benchmark.makeDatasetLayer();
   const program = Dataset.pipe(flatMap((d) => d.size));
   return runHarnessPromise(program.pipe(provide(datasetLayer)))
     .then((size) => Either.right(size))
     .catch((error) => Either.left(String(error)));
+}
+
+function resolveBenchmark(
+  benchmarkId: string,
+  hostBenchmark: Benchmark<HostBenchmarkRunConfig> | undefined
+): Either.Either<BenchmarkMetadata, string> {
+  if (hostBenchmark !== undefined) {
+    return hostBenchmark.id === benchmarkId
+      ? Either.right(hostBenchmark)
+      : Either.left(
+          `Benchmark id mismatch: requested "${benchmarkId}", supplied "${hostBenchmark.id}"`
+        );
+  }
+  const benchmark = getBenchmark(benchmarkId);
+  return benchmark === undefined
+    ? Either.left(`Unknown benchmark "${benchmarkId}"`)
+    : Either.right(benchmark);
+}
+
+function resolveRunBenchmark(input: RunBenchmarkInput): Either.Either<
+  {
+    readonly benchmark: BenchmarkMetadata;
+    readonly benchmarkLayer: ReturnType<Benchmark["makeLayer"]>;
+  },
+  string
+> {
+  if (isNativeBenchmarkConfig(input.benchmarkConfig)) {
+    if (input.hostBenchmark !== undefined) {
+      return Either.left(
+        `A host benchmark cannot be supplied for native benchmark "${input.benchmarkId}"`
+      );
+    }
+    const nativeBenchmark = getBenchmark(input.benchmarkId);
+    if (nativeBenchmark === undefined) {
+      return Either.left(`Unknown benchmark "${input.benchmarkId}"`);
+    }
+    return Either.right({
+      benchmark: nativeBenchmark,
+      benchmarkLayer: makeBenchmarkLayer(
+        nativeBenchmark,
+        input,
+        input.benchmarkConfig
+      ),
+    });
+  }
+  if (input.hostBenchmark === undefined) {
+    return Either.left(
+      `A host benchmark is required for host config "${input.benchmarkId}"`
+    );
+  }
+  if (input.hostBenchmark.id !== input.benchmarkId) {
+    return Either.left(
+      `Benchmark id mismatch: requested "${input.benchmarkId}", supplied "${input.hostBenchmark.id}"`
+    );
+  }
+  return Either.right({
+    benchmark: input.hostBenchmark,
+    benchmarkLayer: makeBenchmarkLayer(
+      input.hostBenchmark,
+      input,
+      input.benchmarkConfig
+    ),
+  });
+}
+
+function makeBenchmarkLayer<Config extends BenchmarkRunConfig>(
+  benchmark: Benchmark<Config>,
+  input: RunBenchmarkInput,
+  benchmarkConfig: Config
+): ReturnType<Benchmark["makeLayer"]> {
+  const maxRetries = benchmarkConfig.maxRetries;
+  const benchmarkInput: BenchmarkRunInput<Config> = {
+    apiKey: input.apiKey,
+    benchmarkConfig,
+    ...(input.baseUrl !== undefined && { baseUrl: input.baseUrl }),
+    ...(input.userSimulator !== undefined && {
+      userSimulator: input.userSimulator,
+    }),
+    sessionId: input.sessionId,
+    ...(input.datasetRetry !== undefined && {
+      datasetRetry: input.datasetRetry,
+    }),
+    ...(maxRetries !== undefined && { modelRetry: { maxRetries } }),
+    ...(input.maxOutputTokensCeiling !== undefined && {
+      maxOutputTokensCeiling: input.maxOutputTokensCeiling,
+    }),
+  };
+  return benchmark.makeLayer(benchmarkInput);
 }

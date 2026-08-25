@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import assert from "node:assert/strict";
 
 import { FetchHttpClient } from "@effect/platform";
@@ -6,11 +6,13 @@ import { flatMap, provide, runPromise } from "effect/Effect";
 
 import type { CapturedRequest } from "../../../test/helpers/fetch-sequence";
 import { installFetchSequence } from "../../../test/helpers/fetch-sequence";
+import { runHarnessPromise } from "../../internal/effect-logger";
 import { isRecord } from "../../internal/guards";
 import {
   getCollectedGenerationIds,
   resetGenerationIds,
 } from "../../runtime/generation-ids";
+import { setCurrentEpoch } from "../../runtime/response-cache";
 import { UserSimulator } from "./user-simulator";
 describe("UserSimulator", () => {
   it.serial(
@@ -86,6 +88,34 @@ describe("UserSimulator", () => {
       expect(requests[0]?.url).toBe(
         "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
       );
+    } finally {
+      restore();
+    }
+  });
+  it.serial("sends the cache salt as a header, not a body field", async () => {
+    const requests: CapturedRequest[] = [];
+    const restore = installFetchSequence(
+      [{ id: "tau-user-gen-1", choices: [{ message: { content: "Hello" } }] }],
+      requests
+    );
+    try {
+      const simulator = new UserSimulator({
+        apiKey: "sk-test",
+        model: "openai/gpt-4o-mini",
+        baseUrl: "https://example.test",
+        sessionId: "wf-123",
+      });
+      simulator.reset("scenario", "Hi");
+      await runPromise(
+        setCurrentEpoch(2).pipe(
+          flatMap(() => simulator.generateInitial()),
+          provide(FetchHttpClient.layer)
+        )
+      );
+      expect(requests[0]?.headers["x-openrouter-cache-salt"]).toBe(
+        "wf-123:epoch-2"
+      );
+      expect(requests[0]?.body["cache_salt"]).toBeUndefined();
     } finally {
       restore();
     }
@@ -296,6 +326,46 @@ describe("UserSimulator", () => {
         expect(callCount).toBe(3);
       } finally {
         globalThis.fetch = originalFetch;
+      }
+    }
+  );
+  it.serial(
+    "logs a structured retry warning for each user-sim retry",
+    async () => {
+      const warn = spyOn(console, "warn").mockImplementation(() => {});
+      const originalFetch = globalThis.fetch;
+      let callCount = 0;
+      const responses = [
+        { choices: [{ message: { content: null } }] },
+        { choices: [{ message: { content: null } }] },
+        { choices: [{ message: { content: "Recovered" } }] },
+      ];
+      globalThis.fetch = async () => {
+        const response = responses[callCount] ?? responses.at(-1);
+        callCount++;
+        return Response.json(response);
+      };
+      try {
+        const simulator = new UserSimulator({
+          apiKey: "sk-test",
+          model: "openai/gpt-4o-mini",
+          baseUrl: "https://example.test",
+        });
+        simulator.reset("scenario", "Hi");
+        const result = await runHarnessPromise(
+          simulator.generateInitial().pipe(provide(FetchHttpClient.layer))
+        );
+        expect(result).toBe("Recovered");
+        expect(warn).toHaveBeenCalledTimes(2);
+        expect(warn.mock.calls[0]?.[0]).toBe("Retrying after transient error");
+        expect(warn.mock.calls[0]?.[1]).toMatchObject({
+          attempt: 1,
+          error_tag: "UserSimError",
+        });
+        expect(warn.mock.calls[1]?.[1]).toMatchObject({ attempt: 2 });
+      } finally {
+        globalThis.fetch = originalFetch;
+        warn.mockRestore();
       }
     }
   );
