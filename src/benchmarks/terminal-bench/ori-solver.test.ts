@@ -1541,7 +1541,7 @@ describe("terminal-bench Prime Agent via ori", () => {
       inputTokens: 37,
       outputTokens: 8,
       totalTokens: 126,
-      cacheReadTokens: 0,
+      cacheReadTokens: 10,
       reasoningTokens: 0,
       totalCost: 0,
     });
