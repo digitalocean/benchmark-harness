@@ -12,6 +12,10 @@ const NVM_INSTALL_URL =
 
 export const ORI_INSTALL_DIR = "/usr/local/bin" as const;
 
+const CUSTOM_PI_PROVIDER = "benchmark-custom" as const;
+
+const CUSTOM_PI_CONFIG_DIR = "/tmp/benchmark-pi-agent" as const;
+
 export const DEFAULT_PI_AGENT_PACKAGE =
   "@earendil-works/pi-coding-agent@latest" as const;
 
@@ -24,6 +28,7 @@ export interface OriRunScriptOptions {
   readonly hasAllowedTools: boolean;
   readonly hasDisallowedTools: boolean;
   readonly isolateAgentConfig: boolean;
+  readonly useCustomPiProvider: boolean;
 }
 
 export interface OriImageStepsOptions {
@@ -309,37 +314,83 @@ const ORI_PI_HARNESS: OriHarnessDef = {
     buildImageSteps({ ...options, binaryName: "pi" }),
   buildBootstrapScript: (options) =>
     buildBootstrapScript({ ...options, binaryName: "pi" }),
-  buildRunScript: (options) =>
-    [
-      "set -euo pipefail",
-      "export HOME=/root",
-      "mkdir -p /logs/agent",
-      'ori pi --model "$TB_MODEL" \\',
-      `  --reasoning-effort ${options.reasoningEffort} -- \\`,
-      "  --print --mode json --no-session \\",
-      ...(options.hasSystemPrompt
-        ? ['  --system-prompt "$TB_SYSTEM_PROMPT" \\']
-        : []),
-      ...(options.hasAppendSystemPrompt
-        ? ['  --append-system-prompt "$TB_APPEND_SYSTEM_PROMPT" \\']
-        : []),
-      ...(options.hasAllowedTools ? ['  --tools "$TB_ALLOWED_TOOLS" \\'] : []),
-      ...(options.hasDisallowedTools
-        ? ['  --exclude-tools "$TB_DISALLOWED_TOOLS" \\']
-        : []),
-      ...(options.isolateAgentConfig
-        ? [
-            "  --no-extensions \\",
-            "  --no-skills \\",
-            "  --no-prompt-templates \\",
-            "  --no-context-files \\",
-          ]
-        : []),
-      `  "$(cat ${options.instructionPath})" \\`,
-      `  2>&1 </dev/null | grep -v '"type":"message_update"' | stdbuf -oL tee ${options.logPath}`,
-    ].join("\n"),
+  buildRunScript: buildPiRunScript,
   parseRun: parsePiStream,
 };
+
+function buildPiRunScript(options: OriRunScriptOptions): string {
+  const thinkingLevel =
+    options.reasoningEffort === "none" ? "off" : options.reasoningEffort;
+  return [
+    "set -euo pipefail",
+    "export HOME=/root",
+    "mkdir -p /logs/agent",
+    ...(options.useCustomPiProvider
+      ? [
+          `export PI_CODING_AGENT_DIR=${CUSTOM_PI_CONFIG_DIR}`,
+          "export PI_OFFLINE=1",
+          "node <<'NODE'",
+          'const fs = require("node:fs");',
+          "const configDir = process.env.PI_CODING_AGENT_DIR;",
+          "const baseUrl = process.env.TB_INFERENCE_BASE_URL;",
+          "const model = process.env.TB_MODEL;",
+          "if (!configDir || !baseUrl || !model) {",
+          '  throw new Error("Missing custom PI provider configuration");',
+          "}",
+          "fs.mkdirSync(configDir, { recursive: true });",
+          "fs.writeFileSync(",
+          `  \`\${configDir}/models.json\`,`,
+          "  JSON.stringify({",
+          "    providers: {",
+          `      "${CUSTOM_PI_PROVIDER}": {`,
+          "        baseUrl,",
+          '        api: "openai-responses",',
+          '        apiKey: "$OPENROUTER_API_KEY",',
+          "        authHeader: true,",
+          "        models: [{",
+          "          id: model,",
+          "          name: model,",
+          "          reasoning: true,",
+          '          input: ["text"],',
+          "          contextWindow: 128000,",
+          "          maxTokens: 32768,",
+          "          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }",
+          "        }]",
+          "      }",
+          "    }",
+          "  })",
+          ");",
+          "NODE",
+          `pi --provider ${CUSTOM_PI_PROVIDER} --model "$TB_MODEL" \\`,
+          `  --thinking ${thinkingLevel} \\`,
+        ]
+      : [
+          'ori pi --model "$TB_MODEL" \\',
+          `  --reasoning-effort ${options.reasoningEffort} -- \\`,
+        ]),
+    "  --print --mode json --no-session \\",
+    ...(options.hasSystemPrompt
+      ? ['  --system-prompt "$TB_SYSTEM_PROMPT" \\']
+      : []),
+    ...(options.hasAppendSystemPrompt
+      ? ['  --append-system-prompt "$TB_APPEND_SYSTEM_PROMPT" \\']
+      : []),
+    ...(options.hasAllowedTools ? ['  --tools "$TB_ALLOWED_TOOLS" \\'] : []),
+    ...(options.hasDisallowedTools
+      ? ['  --exclude-tools "$TB_DISALLOWED_TOOLS" \\']
+      : []),
+    ...(options.isolateAgentConfig
+      ? [
+          "  --no-extensions \\",
+          "  --no-skills \\",
+          "  --no-prompt-templates \\",
+          "  --no-context-files \\",
+        ]
+      : []),
+    `  "$(cat ${options.instructionPath})" \\`,
+    `  2>&1 </dev/null | grep -v '"type":"message_update"' | stdbuf -oL tee ${options.logPath}`,
+  ].join("\n");
+}
 
 export const ORI_HARNESSES: Readonly<Record<OriAgent, OriHarnessDef>> = {
   claude: CLAUDE_HARNESS,

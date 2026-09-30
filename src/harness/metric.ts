@@ -9,6 +9,7 @@ export interface SampleScore {
   readonly responseItems?: readonly ResponseItem[];
   readonly requestBody?: Readonly<Record<string, unknown>>;
   readonly generationIds?: readonly string[];
+  readonly generationTimeMs?: number;
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly input?: string;
   readonly target?: string;

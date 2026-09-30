@@ -1,9 +1,5 @@
 import { HTTPClient } from "@openrouter/sdk/lib/http";
-import type {
-  OpenResponsesResult,
-  ResponsesRequest,
-  StreamEvents,
-} from "@openrouter/sdk/models";
+import type { ResponsesRequest, StreamEvents } from "@openrouter/sdk/models";
 import {
   ConnectionError,
   InvalidRequestError,
@@ -89,6 +85,16 @@ const RawResponsesTerminalEventSchema = z.object({
 type RawResponsesTerminalEvent = z.infer<
   typeof RawResponsesTerminalEventSchema
 >;
+
+const TerminalResponseSchema = z.object({
+  id: z.string(),
+  model: z.string(),
+  output: z.array(z.record(z.string(), z.unknown())),
+  status: z.string(),
+  usage: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+
+type TerminalResponse = z.infer<typeof TerminalResponseSchema>;
 
 export interface ResponsesSendOptions {
   readonly timeoutMs?: number;
@@ -371,7 +377,7 @@ export async function consumeStream(
   onEvent?: (event: StreamEvents) => void,
   initialIdentifiers: ModelErrorIdentifiers = {}
 ): Promise<ResponsesResult | null> {
-  let finalResponse: OpenResponsesResult | null = null;
+  let finalResponse: TerminalResponse | null = null;
   const startedAt = performance.now();
   const identifiers = initialIdentifiers;
   try {
@@ -408,7 +414,13 @@ export async function consumeStream(
       switch (event.type) {
         case "response.completed":
         case "response.incomplete": {
-          finalResponse = event.response;
+          const parsedResponse = parseSchema(
+            TerminalResponseSchema,
+            event.response
+          );
+          if (Either.isRight(parsedResponse)) {
+            finalResponse = parsedResponse.right;
+          }
           break;
         }
         default: {
@@ -423,15 +435,32 @@ export async function consumeStream(
             JSON.stringify(normalizeRawTerminalEvent(parsedRawEvent.right))
           );
           if (!parsedTerminalEvent.ok) {
+            finalResponse = parsedRawEvent.right.response;
             break;
           }
           switch (parsedTerminalEvent.value.type) {
             case "response.completed": {
-              finalResponse = parsedTerminalEvent.value.response;
+              const parsedResponse = parseSchema(
+                TerminalResponseSchema,
+                parsedTerminalEvent.value.response
+              );
+              if (Either.isRight(parsedResponse)) {
+                finalResponse = parsedResponse.right;
+              }
               break;
             }
             case "response.incomplete": {
-              finalResponse = parsedTerminalEvent.value.response;
+              const parsedResponse = parseSchema(
+                TerminalResponseSchema,
+                parsedTerminalEvent.value.response
+              );
+              if (Either.isRight(parsedResponse)) {
+                finalResponse = parsedResponse.right;
+              }
+              break;
+            }
+            default: {
+              finalResponse = parsedRawEvent.right.response;
               break;
             }
           }
@@ -662,10 +691,19 @@ function toResponsesError(
       ...identifiers,
     });
   }
+  if (cause instanceof SDKValidationError) {
+    const inputValidationFailed =
+      cause.rawMessage === "Input validation failed";
+    return new ResponsesError({
+      message: appendModelErrorIdentifiers(cause.message, identifiers),
+      status: inputValidationFailed ? 400 : 500,
+      retryable: !inputValidationFailed,
+      ...identifiers,
+    });
+  }
   if (
     cause instanceof ConnectionError ||
-    cause instanceof UnexpectedClientError ||
-    cause instanceof SDKValidationError
+    cause instanceof UnexpectedClientError
   ) {
     return new ResponsesError({
       message: appendModelErrorIdentifiers(cause.message, identifiers),

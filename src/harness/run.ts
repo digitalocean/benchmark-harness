@@ -12,6 +12,7 @@ import {
 import type { Stream } from "effect/Stream";
 import {
   flatMap as streamFlatMap,
+  filter as streamFilter,
   fromIterable as streamFromIterable,
   mapEffect as streamMapEffect,
   runFoldEffect as streamRunFoldEffect,
@@ -53,6 +54,7 @@ export interface RunConfig {
     readonly start?: number;
     readonly end?: number;
   };
+  readonly sampleIds?: readonly string[];
   readonly degradeSolverErrors?: boolean;
   readonly logAnnotations?: Readonly<Record<string, string>>;
 }
@@ -89,10 +91,17 @@ function sampleEpochStream(
         readonly start?: number;
         readonly end?: number;
       }
-    | undefined
+    | undefined,
+  sampleIds: readonly string[] | undefined
 ): Stream<SampleEpoch, DatasetError> {
   const baseIndex = range?.start ?? 0;
-  return dataset.stream(range).pipe(
+  const samples =
+    sampleIds === undefined
+      ? dataset.stream(range)
+      : dataset
+          .stream(range)
+          .pipe(streamFilter((sample) => sampleIds.includes(sample.id)));
+  return samples.pipe(
     streamZipWithIndex,
     streamFlatMap(([sample, i]) =>
       streamFromIterable(
@@ -221,6 +230,9 @@ function evaluateOne(
         ...(state.requestBody !== undefined && {
           requestBody: state.requestBody,
         }),
+        ...(state.output?.generationTimeMs !== undefined && {
+          generationTimeMs: state.output.generationTimeMs,
+        }),
         ...(state.sample.metadata && { metadata: state.sample.metadata }),
         input: sample.input,
         target: sample.target.text,
@@ -342,7 +354,8 @@ export function runBenchmark(
       const sampleEpochs = sampleEpochStream(
         dataset,
         config.epochs,
-        config.range
+        config.range,
+        config.sampleIds
       );
       const initialAcc: FoldAccumulator = {
         scores: [],

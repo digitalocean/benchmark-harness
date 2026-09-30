@@ -184,14 +184,15 @@ describe("openrouter-model request parity", () => {
         .map((line) => JSON.parse(line));
       expect(events.map((event) => event.event)).toEqual([
         "started",
+        "progress",
         "completed",
       ]);
-      expect(events[1]).toMatchObject({
+      expect(events[2]).toMatchObject({
         status: 200,
         model: "openai/gpt-4o",
         provider_name: "DigitalOcean",
       });
-      expect(events[1]).toHaveProperty("duration_ms");
+      expect(events[2]).toHaveProperty("duration_ms");
     } finally {
       if (originalPath === undefined) {
         Reflect.deleteProperty(process.env, "REQUEST_LOG_FILE");
@@ -1339,6 +1340,61 @@ describe("openrouter-model streaming", () => {
       globalThis.fetch = original;
     };
   }
+  it("fails an unfinished stream at the configured completion timeout", async () => {
+    const original = globalThis.fetch;
+    const encoder = new TextEncoder();
+    globalThis.fetch = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start: (controller) => {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    id: "1",
+                    model: "m",
+                    choices: [
+                      {
+                        index: 0,
+                        delta: { reasoning: "Still thinking" },
+                        finish_reason: null,
+                      },
+                    ],
+                  })}\n\n`
+                )
+              );
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }
+        )
+      );
+    restore = () => {
+      globalThis.fetch = original;
+    };
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+      retry: { maxRetries: 0 },
+    });
+
+    const exit = await runPromiseExit(
+      gen(function* run() {
+        const model = yield* Model;
+        return yield* model.generate(MESSAGES, {
+          completionTimeoutMs: 25,
+        });
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+
+    assertFailure(exit);
+    expect(modelErrorFrom(exit)?.status).toBe(408);
+    expect(modelErrorFrom(exit)?.message).toContain(
+      "Request did not complete within 25ms"
+    );
+  });
   it("requests streaming with usage included", async () => {
     const captured = newHolder();
     restore = installSseFetch(
@@ -1394,6 +1450,67 @@ describe("openrouter-model streaming", () => {
     );
     assertSuccess(exit);
     expect(exit.value.completion).toBe("Answer: B");
+  });
+  it("logs request payload and exposed reasoning from streamed deltas", async () => {
+    const captured = newHolder();
+    restore = installSseFetch(
+      [
+        `data: ${JSON.stringify({ id: "1", model: "m", choices: [{ index: 0, delta: { reasoning: "Think carefully. " }, finish_reason: null }] })}`,
+        `data: ${JSON.stringify({ id: "1", model: "m", choices: [{ index: 0, delta: { content: "Answer: B" }, finish_reason: null }] })}`,
+        `data: ${JSON.stringify({ id: "1", model: "m", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}`,
+        "data: [DONE]",
+      ].join("\n\n"),
+      captured
+    );
+    const directory = mkdtempSync(join(tmpdir(), "openrouter-live-events-"));
+    const path = join(directory, "requests.jsonl");
+    const originalPath = process.env["REQUEST_LOG_FILE"];
+    process.env["REQUEST_LOG_FILE"] = path;
+    const layer = makeOpenRouterModelLayer({
+      model: "openai/gpt-4o",
+      apiKey: "sk-test",
+    });
+    try {
+      const exit = await runPromiseExit(
+        gen(function* run() {
+          const model = yield* Model;
+          return yield* model.generate(MESSAGES, {});
+        }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+      );
+      assertSuccess(exit);
+      const events = readFileSync(path, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(events.map((event) => event.event)).toEqual([
+        "started",
+        "progress",
+        "completed",
+      ]);
+      expect(events[0].request_body).toMatchObject({
+        model: "openai/gpt-4o",
+        messages: [{ role: "user", content: "q" }],
+        stream: true,
+      });
+      expect(events[1]).toMatchObject({
+        status: 200,
+        reasoning_delta: "Think carefully. ",
+        content_delta: "Answer: B",
+      });
+      expect(events[1].received_bytes).toBeGreaterThan(0);
+      expect(events[2]).toMatchObject({
+        event: "completed",
+        response_content: "Answer: B",
+        reasoning: "Think carefully. ",
+      });
+    } finally {
+      if (originalPath === undefined) {
+        Reflect.deleteProperty(process.env, "REQUEST_LOG_FILE");
+      } else {
+        process.env["REQUEST_LOG_FILE"] = originalPath;
+      }
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
   it("merges streamed tool_call deltas by index", async () => {
     const captured = newHolder();

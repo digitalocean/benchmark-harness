@@ -35,6 +35,7 @@ const METADATA: RunMetadata = {
   qualityScore: 0.8,
   disabled: false,
   cancelRequestedAt: null,
+  failureReason: null,
   uploadStatus: "complete",
   uploadError: null,
   uploadedAt: "2026-08-14T10:06:00.000Z",

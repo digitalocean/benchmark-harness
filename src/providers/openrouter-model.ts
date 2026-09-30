@@ -4,6 +4,7 @@ import { ChatResult$inboundSchema } from "@openrouter/sdk/models/chatresult";
 import { millis } from "effect/Duration";
 import type { Effect } from "effect/Effect";
 import {
+  ensuring,
   fail,
   flatMap,
   gen,
@@ -16,6 +17,7 @@ import {
 } from "effect/Effect";
 import type { Layer } from "effect/Layer";
 import { effect } from "effect/Layer";
+import { runForEach } from "effect/Stream";
 
 import type {
   ChatMessage,
@@ -34,6 +36,7 @@ import { isDefinedAndNotNull, isRecord } from "../internal/guards";
 import { wLog } from "../internal/log";
 import {
   logModelRequestCompleted,
+  logModelRequestProgress,
   logModelRequestStarted,
 } from "../internal/request-log";
 import { parseSchema, z } from "../internal/zod";
@@ -70,6 +73,8 @@ export const BENCH_HARNESS_APP_REFERRER =
 
 export const BENCH_HARNESS_APP_TITLE = "OpenRouter: Bench Harness";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const LIVE_PROGRESS_INTERVAL_MS = 1000;
+const REQUEST_BODY_LOG_LIMIT = 256_000;
 
 export interface OpenRouterModelConfig {
   readonly model: string;
@@ -131,6 +136,23 @@ function requestSummary(
     ...(genConfig.timeoutMs !== undefined && {
       timeout_ms: genConfig.timeoutMs,
     }),
+    ...(genConfig.completionTimeoutMs !== undefined && {
+      completion_timeout_ms: genConfig.completionTimeoutMs,
+    }),
+  };
+}
+
+function requestBodyForLog(
+  body: Readonly<Record<string, unknown>>
+): Readonly<Record<string, unknown>> {
+  const serialized = JSON.stringify(body);
+  if (serialized.length <= REQUEST_BODY_LOG_LIMIT) {
+    return body;
+  }
+  return {
+    truncated: true,
+    original_characters: serialized.length,
+    preview: `${serialized.slice(0, REQUEST_BODY_LOG_LIMIT - 3)}...`,
   };
 }
 
@@ -142,6 +164,158 @@ interface GenerateOpts {
   readonly apiKey: string;
   readonly baseUrl: string;
   readonly retry?: RetryConfig;
+}
+
+interface LiveResponseTrackerInput {
+  readonly requestId: string;
+  readonly sessionId?: string | undefined;
+  readonly attempt: number;
+  readonly model: string;
+  readonly url: string;
+  readonly startedAt: string;
+  readonly startedAtMs: number;
+  readonly status: number;
+}
+
+function makeLiveResponseTracker(input: LiveResponseTrackerInput): {
+  readonly accept: (text: string, bytes: number) => void;
+  readonly finish: (text?: string) => void;
+} {
+  let frameBuffer = "";
+  let receivedBytes = 0;
+  let emittedBytes = 0;
+  let contentDelta = "";
+  let reasoningDelta = "";
+  let reasoningDetails: unknown;
+  let toolCallDeltas: unknown[] = [];
+  let timeToFirstOutputMs: number | undefined;
+  let lastEmittedAtMs = input.startedAtMs;
+  let emittedProgress = false;
+  let emittedOutput = false;
+
+  const processFrame = (frame: string): void => {
+    const parsed = parseSseFrame(frame);
+    if (!isRecord(parsed) || !Array.isArray(parsed["choices"])) {
+      return;
+    }
+    for (const choice of parsed["choices"]) {
+      if (!isRecord(choice)) {
+        continue;
+      }
+      const source = isRecord(choice["delta"])
+        ? choice["delta"]
+        : choice["message"];
+      if (!isRecord(source)) {
+        continue;
+      }
+      if (typeof source["content"] === "string") {
+        contentDelta += source["content"];
+      }
+      const reasoning =
+        typeof source["reasoning"] === "string"
+          ? source["reasoning"]
+          : source["reasoning_content"];
+      if (typeof reasoning === "string") {
+        reasoningDelta += reasoning;
+      }
+      if (source["reasoning_details"] !== undefined) {
+        reasoningDetails = source["reasoning_details"];
+      }
+      if (Array.isArray(source["tool_calls"])) {
+        toolCallDeltas.push(...source["tool_calls"]);
+      }
+    }
+    if (
+      timeToFirstOutputMs === undefined &&
+      (contentDelta.length > 0 ||
+        reasoningDelta.length > 0 ||
+        reasoningDetails !== undefined ||
+        toolCallDeltas.length > 0)
+    ) {
+      timeToFirstOutputMs = performance.now() - input.startedAtMs;
+    }
+  };
+
+  const drainFrames = (flush: boolean): void => {
+    let separator = /\r?\n\r?\n/u.exec(frameBuffer);
+    while (separator !== null) {
+      processFrame(frameBuffer.slice(0, separator.index));
+      frameBuffer = frameBuffer.slice(separator.index + separator[0].length);
+      separator = /\r?\n\r?\n/u.exec(frameBuffer);
+    }
+    if (flush && frameBuffer.trim().length > 0) {
+      processFrame(frameBuffer);
+      frameBuffer = "";
+    }
+  };
+
+  const emit = (force: boolean): void => {
+    const now = performance.now();
+    const hasOutput =
+      contentDelta.length > 0 ||
+      reasoningDelta.length > 0 ||
+      reasoningDetails !== undefined ||
+      toolCallDeltas.length > 0;
+    const hasNewBytes = receivedBytes > emittedBytes;
+    if (!(hasOutput || hasNewBytes)) {
+      return;
+    }
+    if (
+      !force &&
+      emittedProgress &&
+      !hasOutput &&
+      now - lastEmittedAtMs < LIVE_PROGRESS_INTERVAL_MS
+    ) {
+      return;
+    }
+    if (
+      !force &&
+      emittedProgress &&
+      emittedOutput &&
+      now - lastEmittedAtMs < LIVE_PROGRESS_INTERVAL_MS
+    ) {
+      return;
+    }
+    logModelRequestProgress({
+      requestId: input.requestId,
+      sessionId: input.sessionId,
+      attempt: input.attempt,
+      model: input.model,
+      url: input.url,
+      startedAt: input.startedAt,
+      observedAt: new Date().toISOString(),
+      elapsedMs: now - input.startedAtMs,
+      status: input.status,
+      receivedBytes,
+      ...(timeToFirstOutputMs !== undefined && { timeToFirstOutputMs }),
+      ...(contentDelta.length > 0 && { contentDelta }),
+      ...(reasoningDelta.length > 0 && { reasoningDelta }),
+      ...(reasoningDetails !== undefined && { reasoningDetails }),
+      ...(toolCallDeltas.length > 0 && { toolCallDeltas }),
+    });
+    emittedBytes = receivedBytes;
+    contentDelta = "";
+    reasoningDelta = "";
+    reasoningDetails = undefined;
+    toolCallDeltas = [];
+    emittedProgress = true;
+    emittedOutput ||= hasOutput;
+    lastEmittedAtMs = now;
+  };
+
+  return {
+    accept: (text, bytes) => {
+      receivedBytes += bytes;
+      frameBuffer += text;
+      drainFrames(false);
+      emit(false);
+    },
+    finish: (text = "") => {
+      frameBuffer += text;
+      drainFrames(true);
+      emit(true);
+    },
+  };
 }
 
 export function generate(
@@ -187,6 +361,9 @@ export function generate(
   const sendProvider = Object.keys(providerPreferences).length > 0;
   const hasTimeout =
     genConfig.timeoutMs !== undefined && genConfig.timeoutMs > 0;
+  const hasCompletionTimeout =
+    genConfig.completionTimeoutMs !== undefined &&
+    genConfig.completionTimeoutMs > 0;
   const baseModel = stripVariantSuffix(model);
   const autoRouterPlugin = buildAutoRouterPlugin(baseModel, genConfig);
   const wireAutoRouterPlugin =
@@ -201,7 +378,7 @@ export function generate(
   let responseBody: string | undefined;
   let responseStatus: number | undefined;
   let responseIdentifiers: ModelErrorIdentifiers = {};
-  const attempt = gen(function* () {
+  const requestAttemptEffect = gen(function* () {
     const startedAt = performance.now();
     attemptStartedAt = startedAt;
     attemptStartedAtIso = new Date().toISOString();
@@ -260,6 +437,7 @@ export function generate(
       url,
       startedAt: attemptStartedAtIso,
       request: requestSummary(messages.length, genConfig),
+      requestBody: requestBodyForLog(body),
     });
     const response = yield* hasTimeout
       ? client.execute(request).pipe(
@@ -295,7 +473,35 @@ export function generate(
         })
       );
     }
-    const rawBody = yield* response.text;
+    const decoder = new TextDecoder();
+    const rawBodyParts: string[] = [];
+    const liveResponseTracker = makeLiveResponseTracker({
+      requestId,
+      sessionId: opts.sessionId,
+      attempt: requestAttempt,
+      model,
+      url,
+      startedAt: attemptStartedAtIso,
+      startedAtMs: startedAt,
+      status: response.status,
+    });
+    yield* runForEach(response.stream, (chunk) =>
+      sync(() => {
+        const text = decoder.decode(chunk, { stream: true });
+        rawBodyParts.push(text);
+        liveResponseTracker.accept(text, chunk.byteLength);
+      })
+    ).pipe(
+      ensuring(
+        sync(() => {
+          const trailingText = decoder.decode();
+          rawBodyParts.push(trailingText);
+          liveResponseTracker.finish(trailingText);
+          responseBody = rawBodyParts.join("");
+        })
+      )
+    );
+    const rawBody = rawBodyParts.join("");
     responseBody = rawBody;
     const json = yield* decodeChatCompletionBody(rawBody, identifiers);
     const envelopeError = errorEnvelopeError(
@@ -348,11 +554,36 @@ export function generate(
       status: response.status,
       ok: true,
       ...(output.usage !== undefined && { usage: { ...output.usage } }),
+      responseContent: output.completion,
+      ...(output.message.reasoning !== undefined && {
+        reasoning: output.message.reasoning,
+      }),
+      ...(output.message.reasoningDetails !== undefined && {
+        reasoningDetails: output.message.reasoningDetails,
+      }),
+      ...(output.message.toolCalls !== undefined && {
+        toolCalls: output.message.toolCalls,
+      }),
       ...(providerName !== undefined && { providerName }),
       ...identifiers,
     });
     return output;
-  }).pipe(
+  });
+  const attempt = (
+    hasCompletionTimeout
+      ? requestAttemptEffect.pipe(
+          timeout(millis(genConfig.completionTimeoutMs!)),
+          catchTag("TimeoutException", () =>
+            fail(
+              new ModelError({
+                status: 408,
+                message: `Request did not complete within ${genConfig.completionTimeoutMs}ms`,
+              })
+            )
+          )
+        )
+      : requestAttemptEffect
+  ).pipe(
     mapError(toModelError),
     tapError((error) =>
       sync(() => {
@@ -369,6 +600,7 @@ export function generate(
           ok: false,
           response: responseBody,
           error: error.message,
+          failureStage: requestFailureStage(responseStatus),
           ...responseIdentifiers,
         });
       })
@@ -378,6 +610,17 @@ export function generate(
 }
 
 type ResponseIdentifiers = Pick<ModelErrorIdentifiers, "cfRay" | "xRequestId">;
+
+function requestFailureStage(
+  responseStatus: number | undefined
+): "transport" | "http" | "response_processing" {
+  if (responseStatus === undefined) {
+    return "transport";
+  }
+  return responseStatus >= 200 && responseStatus < 300
+    ? "response_processing"
+    : "http";
+}
 
 interface StreamToolCallAccumulator {
   id?: string;
@@ -441,6 +684,22 @@ function mergeStreamToolCallDelta(
   }
 }
 
+function parseSseFrame(frame: string): unknown {
+  const data = frame
+    .split(/\r?\n/u)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+  if (data.length === 0 || data === "[DONE]") {
+    return undefined;
+  }
+  try {
+    return JSON.parse(data);
+  } catch {
+    return undefined;
+  }
+}
+
 function reconstructFromSse(rawBody: string): Record<string, unknown> {
   let id: string | undefined;
   let model: string | undefined;
@@ -457,20 +716,7 @@ function reconstructFromSse(rawBody: string): Record<string, unknown> {
   const toolCalls: StreamToolCallAccumulator[] = [];
 
   for (const frame of rawBody.split(/\r?\n\r?\n/)) {
-    const data = frame
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trimStart())
-      .join("\n");
-    if (data.length === 0 || data === "[DONE]") {
-      continue;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(data);
-    } catch {
-      continue;
-    }
+    const parsed = parseSseFrame(frame);
     if (!isRecord(parsed)) {
       continue;
     }
@@ -521,6 +767,8 @@ function reconstructFromSse(rawBody: string): Record<string, unknown> {
       }
       if (typeof source["reasoning"] === "string") {
         reasoning += source["reasoning"];
+      } else if (typeof source["reasoning_content"] === "string") {
+        reasoning += source["reasoning_content"];
       }
       if (source["reasoning_details"] !== undefined) {
         reasoningDetails = source["reasoning_details"];

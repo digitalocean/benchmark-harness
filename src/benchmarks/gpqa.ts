@@ -10,8 +10,8 @@ import { chain, generate, systemMessage } from "../harness/solver";
 import { definedValues } from "../internal/guards";
 import type { RetryConfig } from "../runtime/retry";
 import type {
-  FixedTemperatureInferenceOverride,
   GpqaBenchmarkConfig,
+  InferenceOverride,
 } from "./benchmark-config";
 import { GPQA_META } from "./benchmark-meta";
 import { defineChatBenchmark } from "./define-chat-benchmark";
@@ -94,7 +94,7 @@ export function gpqaSolver(
   model: ModelService,
   opts?: {
     readonly endpointId?: string;
-    readonly inference?: FixedTemperatureInferenceOverride;
+    readonly inference?: InferenceOverride;
   }
 ): SolverService {
   const config: GenerateConfig = {
@@ -131,9 +131,11 @@ export const GPQA_BENCHMARK: Benchmark = defineChatBenchmark({
     gpqaSolver(model, {
       ...(config.endpointId !== undefined && { endpointId: config.endpointId }),
       inference: {
+        temperature: config.temperature,
         maxTokens: config.maxTokens,
         reasoningEffort: config.reasoningEffort,
         timeoutMs: config.timeoutMs,
+        completionTimeoutMs: config.completionTimeoutMs,
         sort: config.sort,
         providerOnly: config.providerOnly,
         providerIgnore: config.providerIgnore,

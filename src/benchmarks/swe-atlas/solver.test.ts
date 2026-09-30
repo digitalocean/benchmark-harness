@@ -384,6 +384,29 @@ describe("swe-atlas solver", () => {
     );
     expect(score.value).toBe(ScoreValue.Correct);
   });
+  it("uses separate judge credentials when configured", async () => {
+    const log: ExecLog = { calls: [], creates: [] };
+    await runSweAtlasSolver(
+      scriptedModel(newConfigRecord()),
+      fakeSandbox(log, "1"),
+      {
+        ...SOLVER_OPTS,
+        judgeApiKey: "judge-secret",
+        judgeBaseUrl: "https://judge.example/v1",
+        judgeModel: "judge/model",
+      }
+    );
+    const verifierCall = log.calls.find((c) =>
+      c.argv.join(" ").includes("test.sh")
+    );
+    expect(verifierCall?.env["EVAL_API_KEY"]).toBe("judge-secret");
+    expect(verifierCall?.env["OPENAI_API_KEY"]).toBe("judge-secret");
+    expect(verifierCall?.env["EVAL_BASE_URL"]).toBe("https://judge.example/v1");
+    expect(verifierCall?.env["OPENAI_API_BASE"]).toBe(
+      "https://judge.example/v1"
+    );
+    expect(verifierCall?.env["EVAL_MODEL"]).toBe("judge/model");
+  });
   it("stashes reward=0 → Incorrect when the verifier fails", async () => {
     const log: ExecLog = { calls: [], creates: [] };
     const record = newConfigRecord();

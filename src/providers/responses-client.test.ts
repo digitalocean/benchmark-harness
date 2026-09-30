@@ -2,7 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { strict as assert } from "node:assert";
 import { readFile } from "node:fs/promises";
 
-import type { StreamEvents } from "@openrouter/sdk/models";
+import type { ResponsesRequest, StreamEvents } from "@openrouter/sdk/models";
 import { OpenRouterError } from "@openrouter/sdk/models/errors/openroutererror";
 import { streamEventsFromJSON } from "@openrouter/sdk/models/streamevents";
 import { failureOption } from "effect/Cause";
@@ -254,6 +254,109 @@ describe("consumeStream", () => {
         inputTokens: 414,
         outputTokens: 69,
         totalTokens: 483,
+      },
+    });
+  });
+  it("accepts a DigitalOcean terminal event with nullable optional fields", async () => {
+    const parsed = streamEventsFromJSON(
+      JSON.stringify({
+        type: "response.completed",
+        sequence_number: 8,
+        response: {
+          background: false,
+          created_at: 0,
+          error: null,
+          frequency_penalty: 0,
+          id: "resp-do",
+          incomplete_details: null,
+          instructions: "You must call the bash tool.",
+          max_output_tokens: 1024,
+          metadata: null,
+          model: "glm-5.3-flash",
+          object: "response",
+          output: [
+            {
+              arguments: '{"command":"pwd"}',
+              call_id: "call-do",
+              caller: null,
+              id: "fc-do",
+              name: "bash",
+              namespace: null,
+              status: "completed",
+              type: "function_call",
+            },
+          ],
+          parallel_tool_calls: true,
+          presence_penalty: 0,
+          reasoning: {
+            context: null,
+            effort: "high",
+            generate_summary: null,
+            mode: null,
+            summary: null,
+          },
+          service_tier: "auto",
+          status: "completed",
+          store: null,
+          temperature: 0,
+          text: null,
+          tool_choice: "auto",
+          tools: [
+            {
+              description: "Execute a bash command.",
+              name: "bash",
+              parameters: {
+                type: "object",
+                properties: { command: { type: "string" } },
+                required: ["command"],
+              },
+              strict: null,
+              type: "function",
+            },
+          ],
+          top_p: 1,
+          truncation: "disabled",
+          usage: {
+            input_tokens: 165,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: 11,
+            output_tokens_details: {
+              reasoning_tokens: 0,
+              tool_output_tokens: 0,
+            },
+            total_tokens: 176,
+          },
+        },
+      })
+    );
+    if (!parsed.ok) {
+      throw parsed.error;
+    }
+    expect(parsed.value).toMatchObject({
+      type: "UNKNOWN",
+      isUnknown: true,
+    });
+    async function* stream(): AsyncGenerator<StreamEvents> {
+      yield parsed.value;
+    }
+
+    const result = await consumeStream(stream());
+
+    expect(result).toMatchObject({
+      id: "resp-do",
+      model: "glm-5.3-flash",
+      status: "completed",
+      output: [
+        {
+          type: "function_call",
+          call_id: "call-do",
+          name: "bash",
+        },
+      ],
+      usage: {
+        input_tokens: 165,
+        output_tokens: 11,
+        total_tokens: 176,
       },
     });
   });
@@ -544,6 +647,56 @@ describe("makeResponsesLayer", () => {
       const error = getOrThrow(failureOption(exit.cause));
       expect(error.status).toBe(500);
       expect(error.retryable).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+  it("does not retry outbound SDK input validation failures", async () => {
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = () => {
+      fetchCalls += 1;
+      return Promise.resolve(
+        new Response("", {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        })
+      );
+    };
+    try {
+      const invalidRequest = {
+        model: "m",
+        input: [
+          {
+            type: "function_call",
+            arguments: '{"command":"pwd"}',
+            callId: "call-do",
+            id: "fc-do",
+            name: "bash",
+            namespace: null,
+            status: "completed",
+          },
+        ],
+      } as unknown as ResponsesRequest;
+      const exit = await runPromiseExit(
+        gen(function* run() {
+          const responses = yield* Responses;
+          return yield* responses.send(invalidRequest, { timeoutMs: 1000 });
+        }).pipe(
+          provide(
+            makeResponsesLayer({
+              apiKey: "sk-test",
+              baseUrl: "https://example.test",
+            })
+          )
+        )
+      );
+      assertFailure(exit);
+      const error = getOrThrow(failureOption(exit.cause));
+      expect(error.status).toBe(400);
+      expect(error.retryable).toBe(false);
+      expect(error.message).toContain("Input validation failed");
+      expect(fetchCalls).toBe(0);
     } finally {
       globalThis.fetch = originalFetch;
     }

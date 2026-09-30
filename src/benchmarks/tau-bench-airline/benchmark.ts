@@ -129,9 +129,11 @@ function makeAirlineLayer(
       sessionId: input.sessionId,
     },
     inference: {
+      temperature: benchmarkConfig.temperature,
       maxTokens: benchmarkConfig.maxTokens,
       reasoningEffort: benchmarkConfig.reasoningEffort,
       timeoutMs: benchmarkConfig.timeoutMs,
+      completionTimeoutMs: benchmarkConfig.completionTimeoutMs,
       sort: benchmarkConfig.sort,
       providerOnly: benchmarkConfig.providerOnly,
       providerIgnore: benchmarkConfig.providerIgnore,

@@ -13,6 +13,18 @@ describe("bench-harness CLI", () => {
   it("parses unordered concurrency as an opt-in flag", () => {
     expect(parseArgs(["--unordered"]).unordered).toBe(true);
     expect(parseArgs([]).unordered).toBe(false);
+    expect(parseArgs([]).concurrency).toBe(3);
+  });
+
+  it("parses repeatable internal sample selectors", () => {
+    expect(
+      parseArgs([
+        "--sample-id",
+        "gpqa_diamond-1",
+        "--sample-id",
+        "gpqa_diamond-3",
+      ]).sampleIds
+    ).toEqual(["gpqa_diamond-1", "gpqa_diamond-3"]);
   });
 
   it("writes machine-readable evaluation progress", () => {

@@ -21,6 +21,7 @@ export interface RunBundleMetadata {
   readonly finishedAt: string | null;
   readonly status: string;
   readonly exitCode: number | null;
+  readonly failureReason: string | null;
 }
 
 export interface UploadResult {
@@ -112,6 +113,7 @@ export async function uploadRunBundle(
     benchmark: run.benchmark,
     status: run.status,
     exitCode: run.exitCode,
+    failureReason: run.failureReason,
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
     uploadedAt,

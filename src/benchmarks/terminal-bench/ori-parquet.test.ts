@@ -150,6 +150,9 @@ async function runOriSampleToParquetRow() {
           ...(generationIds.length > 0 && {
             generationIds: [...new Set(generationIds)],
           }),
+          ...(state.output?.generationTimeMs !== undefined && {
+            generationTimeMs: state.output.generationTimeMs,
+          }),
           ...(state.sample.metadata && { metadata: state.sample.metadata }),
           input: state.sample.input,
           target: state.sample.target.text,

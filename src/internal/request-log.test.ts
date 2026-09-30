@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import {
   logModelRequestCompleted,
+  logModelRequestProgress,
   logModelRequestStarted,
 } from "./request-log";
 
@@ -100,6 +101,7 @@ describe("model request event logging", () => {
       status: 503,
       response: '{"error":"unavailable"}',
       error: "HTTP 503",
+      failureStage: "http",
     });
 
     const logged = await records(path);
@@ -107,6 +109,55 @@ describe("model request event logging", () => {
       status: 503,
       error: "HTTP 503",
       response: '{"error":"unavailable"}',
+      failure_stage: "http",
     });
+  });
+
+  it("persists request bodies and incremental response reasoning", async () => {
+    root = await mkdtemp(join(tmpdir(), "request-events-"));
+    const path = join(root, "requests.jsonl");
+    process.env["REQUEST_LOG_FILE"] = path;
+
+    logModelRequestStarted({
+      requestId: "request-live",
+      attempt: 1,
+      startedAt: "2026-09-01T08:00:00.000Z",
+      model: "model-1",
+      url: "https://openrouter.ai/api/v1/chat/completions",
+      request: { messages: 1, stream: true },
+      requestBody: {
+        model: "model-1",
+        messages: [{ role: "user", content: "Question" }],
+        stream: true,
+      },
+    });
+    logModelRequestProgress({
+      requestId: "request-live",
+      attempt: 1,
+      startedAt: "2026-09-01T08:00:00.000Z",
+      observedAt: "2026-09-01T08:00:01.000Z",
+      elapsedMs: 1000,
+      model: "model-1",
+      url: "https://openrouter.ai/api/v1/chat/completions",
+      status: 200,
+      receivedBytes: 123,
+      timeToFirstOutputMs: 750,
+      reasoningDelta: "Reasoning ",
+      contentDelta: "Answer",
+    });
+
+    expect(await records(path)).toEqual([
+      expect.objectContaining({
+        event: "started",
+        request_body: expect.objectContaining({ model: "model-1" }),
+      }),
+      expect.objectContaining({
+        event: "progress",
+        received_bytes: 123,
+        time_to_first_output_ms: 750,
+        reasoning_delta: "Reasoning ",
+        content_delta: "Answer",
+      }),
+    ]);
   });
 });

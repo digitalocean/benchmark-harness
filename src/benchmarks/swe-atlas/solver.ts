@@ -78,6 +78,8 @@ export interface SweAtlasSolverOpts {
   readonly apiKey: string;
   readonly endpointId?: string;
   readonly judgeModel: string;
+  readonly judgeApiKey?: string;
+  readonly judgeBaseUrl?: string;
   readonly stepLimit: number;
   readonly inference?: InferenceOverride;
   readonly agent?: HarborAgent;
@@ -263,13 +265,15 @@ function runVerifier(input: RunVerifierInput): Effect<
 > {
   const { session, meta, opts } = input;
   const verifierTimeoutMs = Math.round(meta.maxTestTimeoutSec * 1000) + 30000;
+  const judgeApiKey = opts.judgeApiKey ?? opts.apiKey;
+  const judgeBaseUrl = opts.judgeBaseUrl ?? JUDGE_BASE_URL;
   const judgeEnv: Record<string, string> = {
     ...AGENT_ENV,
-    EVAL_API_KEY: opts.apiKey,
-    EVAL_BASE_URL: JUDGE_BASE_URL,
+    EVAL_API_KEY: judgeApiKey,
+    EVAL_BASE_URL: judgeBaseUrl,
     EVAL_MODEL: opts.judgeModel,
-    OPENAI_API_KEY: opts.apiKey,
-    OPENAI_API_BASE: JUDGE_BASE_URL,
+    OPENAI_API_KEY: judgeApiKey,
+    OPENAI_API_BASE: judgeBaseUrl,
   };
   return gen(function* () {
     yield* session.uploadDir(input.testDir, REMOTE_TEST_DIR);

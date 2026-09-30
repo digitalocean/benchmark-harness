@@ -8,7 +8,7 @@ import {
 } from "./model-catalog";
 
 describe("DigitalOcean model catalog", () => {
-  it("fetches every page, filters the DigitalOcean provider, and sorts newest first", async () => {
+  it("fetches every page, includes every provider, and sorts newest first", async () => {
     const urls: URL[] = [];
     const client = makeModelCatalogClient({
       env: { DO_MODEL_CATALOG_TOKEN: "catalog-token" },
@@ -54,6 +54,7 @@ describe("DigitalOcean model catalog", () => {
     });
 
     await expect(client.listDigitalOceanModels()).resolves.toEqual([
+      "third-party",
       "newer-do",
       "older-do",
     ]);
@@ -75,7 +76,7 @@ describe("DigitalOcean model catalog", () => {
     );
   });
 
-  it("loads DigitalOcean-hosted OpenRouter models newest first", async () => {
+  it("loads all OpenRouter models newest first", async () => {
     const urls: URL[] = [];
     let currentTime = 0;
     const client = makeModelCatalogClient({
@@ -88,6 +89,7 @@ describe("DigitalOcean model catalog", () => {
         });
         return Response.json({
           data: [
+            { id: "openai/newest", created: 300 },
             { id: "digitalocean/older", created: 100 },
             { id: "digitalocean/newer", created: 200 },
           ],
@@ -96,11 +98,13 @@ describe("DigitalOcean model catalog", () => {
     });
 
     await expect(client.listOpenRouterModels()).resolves.toEqual([
+      "openai/newest",
       "digitalocean/newer",
       "digitalocean/older",
     ]);
     currentTime = 2 * 60 * 60 * 1000 - 1;
     await expect(client.listOpenRouterModels()).resolves.toEqual([
+      "openai/newest",
       "digitalocean/newer",
       "digitalocean/older",
     ]);
@@ -108,7 +112,7 @@ describe("DigitalOcean model catalog", () => {
     currentTime += 1;
     await client.listOpenRouterModels();
     expect(urls).toHaveLength(2);
-    expect(urls[0]?.searchParams.get("providers")).toBe("digitalocean");
+    expect(urls[0]?.searchParams.has("providers")).toBe(false);
   });
 
   it("recognizes only the supported DigitalOcean inference endpoints", () => {

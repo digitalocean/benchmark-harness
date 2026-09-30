@@ -9,6 +9,7 @@ import type { BenchmarkRunConfig } from "../benchmarks/benchmark-config";
 import { modelFromConfig } from "../benchmarks/benchmark-config";
 import type { BenchmarkMetadata } from "../benchmarks/types";
 import type { RunResult } from "../harness/run";
+import { iLog } from "../internal/log";
 import { runResultToParquet } from "./parquet";
 
 export interface ResultStoreService {
@@ -26,6 +27,16 @@ export class ResultStore extends Tag("@openrouter/bench-harness/result-store")<
   ResultStoreService
 >() {}
 
+function configuredTemperature(
+  benchmarkConfig: BenchmarkRunConfig,
+  fallback: number
+): number {
+  return "temperature" in benchmarkConfig &&
+    typeof benchmarkConfig.temperature === "number"
+    ? benchmarkConfig.temperature
+    : fallback;
+}
+
 export function makeLocalResultStore(opts: {
   readonly dir: string;
 }): ResultStoreService {
@@ -33,6 +44,13 @@ export function makeLocalResultStore(opts: {
     write: ({ result, benchmark, benchmarkConfig, epochs, sessionId }) => {
       const benchmarkId = benchmarkConfig.benchmarkId;
       const model = modelFromConfig(benchmarkConfig) ?? benchmarkId;
+      iLog("Starting benchmark result serialization", {
+        benchmark: benchmarkId,
+        model,
+        sessionId,
+        sampleScores: result.sampleScores.length,
+        memory: process.memoryUsage(),
+      });
       const extraScores = benchmark.runLevelScores?.(result);
       const primaryScore = benchmark.primaryScore?.(result);
       const parquetBuffer = runResultToParquet({
@@ -41,7 +59,10 @@ export function makeLocalResultStore(opts: {
           task: benchmarkId,
           model,
           epochs,
-          temperature: benchmark.temperature,
+          temperature: configuredTemperature(
+            benchmarkConfig,
+            benchmark.temperature
+          ),
           benchmarkConfig,
         },
         ...(extraScores !== undefined && { extraScores }),
@@ -52,6 +73,14 @@ export function makeLocalResultStore(opts: {
       const filepath = join(opts.dir, filename);
       mkdirSync(opts.dir, { recursive: true });
       writeFileSync(filepath, parquetBuffer);
+      iLog("Benchmark Parquet result written", {
+        benchmark: benchmarkId,
+        model,
+        sessionId,
+        filepath,
+        bytes: parquetBuffer.byteLength,
+        memory: process.memoryUsage(),
+      });
       return succeed(filepath);
     },
   };

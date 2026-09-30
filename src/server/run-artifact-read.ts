@@ -148,16 +148,32 @@ async function artifactResponse(
 
 export async function remoteRunArtifactResponse(
   metadata: RunMetadata,
-  kind: "logs" | "requests" | "state" | "parquet",
+  kind: "logs" | "requests" | "state" | "parquet" | "gpqa-report",
   download: boolean
 ): Promise<Response | undefined> {
-  const artifact =
-    kind === "parquet"
-      ? await parquetArtifact(metadata)
-      : fixedArtifact(metadata, kind);
+  let artifact: RemoteArtifact | undefined;
+  if (kind === "parquet") {
+    artifact = await parquetArtifact(metadata);
+  } else if (kind === "gpqa-report") {
+    const prefix = remotePrefix(metadata);
+    artifact = {
+      key: `${prefix}/reports/gpqa-report.json`,
+      filename: `${metadata.id}-gpqa-report.json`,
+      contentType: "application/json; charset=utf-8",
+    };
+  } else {
+    artifact = fixedArtifact(metadata, kind);
+  }
   return artifact === undefined
     ? undefined
     : artifactResponse(artifact, download);
+}
+
+export async function readRemotePrecomputedGpqaReport(
+  metadata: RunMetadata
+): Promise<Uint8Array | undefined> {
+  const prefix = remotePrefix(metadata);
+  return readBytes(`${prefix}/reports/gpqa-report.json`);
 }
 
 export async function remoteRunLogTailResponse(

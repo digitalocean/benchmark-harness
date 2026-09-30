@@ -13,6 +13,7 @@ import {
   SWE_ATLAS_RF_BENCHMARK,
   SWE_ATLAS_TW_BENCHMARK,
 } from "./swe-atlas/benchmark";
+import { SWE_BENCH_VERIFIED_BENCHMARK } from "./swe-bench/benchmark";
 import { TAU_BENCH_AIRLINE_BENCHMARK } from "./tau-bench-airline/benchmark";
 import { TAU3_BENCH_BANKING_BENCHMARK } from "./tau3-bench-banking/benchmark";
 import { TERMINAL_BENCH_BENCHMARK } from "./terminal-bench/benchmark";
@@ -33,6 +34,7 @@ const BENCHMARKS: Record<string, Benchmark> = {
   [SWE_ATLAS_TW_BENCHMARK.id]: SWE_ATLAS_TW_BENCHMARK,
   [SWE_ATLAS_RF_BENCHMARK.id]: SWE_ATLAS_RF_BENCHMARK,
   [DEEP_SWE_BENCHMARK.id]: DEEP_SWE_BENCHMARK,
+  [SWE_BENCH_VERIFIED_BENCHMARK.id]: SWE_BENCH_VERIFIED_BENCHMARK,
   [WANDR_BENCHMARK.id]: WANDR_BENCHMARK,
   [BROWSECOMP_BENCHMARK.id]: BROWSECOMP_BENCHMARK,
   [HLE_BENCHMARK.id]: HLE_BENCHMARK,

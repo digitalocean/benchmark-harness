@@ -37,6 +37,7 @@ const SAMPLE_SCORES: readonly SampleScore[] = [
     sampleId: "s0",
     epoch: 0,
     score: { value: ScoreValue.Correct, answer: "B", explanation: "" },
+    generationTimeMs: 100,
     input: "What is 2+2?",
     target: "B",
   },
@@ -44,6 +45,7 @@ const SAMPLE_SCORES: readonly SampleScore[] = [
     sampleId: "s0",
     epoch: 1,
     score: { value: ScoreValue.Incorrect, answer: "A", explanation: "guessed" },
+    generationTimeMs: 200,
     input: "What is 2+2?",
     target: "B",
   },
@@ -51,6 +53,7 @@ const SAMPLE_SCORES: readonly SampleScore[] = [
     sampleId: "s1",
     epoch: 0,
     score: { value: ScoreValue.Correct, answer: "C", explanation: "" },
+    generationTimeMs: 300,
     input: "Capital of France?",
     target: "C",
   },
@@ -147,13 +150,15 @@ describe("runResultToParquet", () => {
     expect(correct.score_value).toBe("C");
     expect(correct.answer).toBe("B");
     expect(correct.explanation).toBeNull();
+    expect(correct.sample_generation_time_ms).toBe(100);
     expect(correct.input).toBe("What is 2+2?");
     expect(correct.target).toBe("B");
     const incorrect = rows.find((r) => r.sample_id === "s0" && r.epoch === 1)!;
     expect(incorrect.score_value).toBe("I");
     expect(incorrect.explanation).toBe("guessed");
+    expect(incorrect.sample_generation_time_ms).toBe(200);
   });
-  it("serializes the scorer trajectory as a nullable JSON column", async () => {
+  it("serializes the scorer trajectory as a nullable JSON payload", async () => {
     const trajectory = {
       kind: "verifier_log",
       log: "P2P 3/3 pass 0 fail\nF2P 20/20 pass 0 fail",
@@ -273,7 +278,7 @@ describe("runResultToParquet", () => {
     const requestRows = await readRows(bufferWithRequest);
     expect(JSON.parse(requestRows[0]!.request_body!)).toEqual(requestBody);
   });
-  it("serializes generation ids as a JSON column", async () => {
+  it("serializes generation ids as a JSON payload", async () => {
     const bufferWithIds = runResultToParquet({
       result: {
         metrics: METRICS,
@@ -292,7 +297,7 @@ describe("runResultToParquet", () => {
     const idRows = await readRows(bufferWithIds);
     expect(JSON.parse(idRows[0]!.generation_ids!)).toEqual(["gen-1", "gen-2"]);
   });
-  it("serializes response_items as a JSON column preserving raw advisor items", async () => {
+  it("serializes response_items as a JSON payload preserving raw advisor items", async () => {
     const advisorItem = {
       type: "openrouter:advisor",
       id: "st_tmp_abc123",
@@ -343,7 +348,7 @@ describe("runResultToParquet", () => {
     expect(rowScoreToNumber("C")).toBe(1);
     expect(rowScoreToNumber("I")).toBe(0);
   });
-  it("serializes message trajectories as a JSON column", async () => {
+  it("serializes message trajectories as a JSON payload", async () => {
     const messages: readonly ChatMessage[] = [
       { role: MessageRole.System, content: "You are a helpful assistant." },
       { role: MessageRole.User, content: "What is 2+2?" },
@@ -376,6 +381,72 @@ describe("runResultToParquet", () => {
       { role: "user", content: "What is 2+2?" },
       { role: "assistant", content: "Answer: B" },
     ]);
+  });
+  it("preserves message row alignment around null trajectories", async () => {
+    const message = (answer: string): readonly ChatMessage[] => [
+      { role: MessageRole.Assistant, content: `Answer: ${answer}` },
+    ];
+    const bufferWithNullTrajectory = runResultToParquet({
+      result: {
+        metrics: {
+          accuracy: 1,
+          totalQuestions: 2,
+          correctAnswers: 2,
+          skippedQuestions: 1,
+        },
+        usage: USAGE,
+        sampleScores: [
+          {
+            sampleId: "failed",
+            epoch: 0,
+            score: {
+              value: ScoreValue.Skipped,
+              answer: null,
+              explanation: "model error",
+            },
+            messages: [],
+            input: "failed question",
+            target: "A",
+          },
+          {
+            sampleId: "answered-d",
+            epoch: 0,
+            score: {
+              value: ScoreValue.Correct,
+              answer: "D",
+              explanation: "",
+            },
+            messages: message("D"),
+            input: "question D",
+            target: "D",
+          },
+          {
+            sampleId: "answered-a",
+            epoch: 0,
+            score: {
+              value: ScoreValue.Correct,
+              answer: "A",
+              explanation: "",
+            },
+            messages: message("A"),
+            input: "question A",
+            target: "A",
+          },
+        ],
+      },
+      meta: META,
+    });
+
+    const alignedRows = await readRows(bufferWithNullTrajectory);
+    const failed = alignedRows.find((row) => row.sample_id === "failed");
+    const answeredD = alignedRows.find((row) => row.sample_id === "answered-d");
+    const answeredA = alignedRows.find((row) => row.sample_id === "answered-a");
+
+    expect(failed?.messages).toBeNull();
+    expect(answeredD?.answer).toBe("D");
+    expect(JSON.parse(answeredD!.messages!)).toEqual(message("D"));
+    expect(answeredA?.answer).toBe("A");
+    expect(JSON.parse(answeredA!.messages!)).toEqual(message("A"));
   });
   it("serializes tool calls and tool_call_id in the messages JSON", async () => {
     const messages: readonly ChatMessage[] = [
@@ -554,7 +625,7 @@ describe("runResultToParquet", () => {
       },
     ]);
   });
-  it("serializes per-sample metadata as a JSON column", async () => {
+  it("serializes per-sample metadata as a JSON payload", async () => {
     const bufferWithMeta = runResultToParquet({
       result: {
         metrics: METRICS,
@@ -583,7 +654,7 @@ describe("runResultToParquet", () => {
       expect(row.extra_scores).toBeNull();
     }
   });
-  it("serializes run-level extra_scores as a JSON column", async () => {
+  it("serializes run-level extra_scores as a JSON payload", async () => {
     const bufferWithExtra = runResultToParquet({
       result: RESULT,
       meta: META,

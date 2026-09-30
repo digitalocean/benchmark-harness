@@ -16,6 +16,20 @@ interface RequestIdentity {
 export interface ModelRequestStartedEntry extends RequestIdentity {
   readonly startedAt: string;
   readonly request: Readonly<Record<string, unknown>>;
+  readonly requestBody?: Readonly<Record<string, unknown>> | undefined;
+}
+
+export interface ModelRequestProgressEntry extends RequestIdentity {
+  readonly startedAt: string;
+  readonly observedAt: string;
+  readonly elapsedMs: number;
+  readonly status: number;
+  readonly receivedBytes: number;
+  readonly timeToFirstOutputMs?: number | undefined;
+  readonly contentDelta?: string | undefined;
+  readonly reasoningDelta?: string | undefined;
+  readonly reasoningDetails?: unknown;
+  readonly toolCallDeltas?: readonly unknown[] | undefined;
 }
 
 export interface ModelRequestCompletedEntry extends RequestIdentity {
@@ -26,7 +40,16 @@ export interface ModelRequestCompletedEntry extends RequestIdentity {
   readonly ok: boolean;
   readonly usage?: Readonly<Record<string, unknown>> | undefined;
   readonly response?: string | undefined;
+  readonly responseContent?: string | undefined;
+  readonly reasoning?: string | undefined;
+  readonly reasoningDetails?: unknown;
+  readonly toolCalls?: readonly unknown[] | undefined;
   readonly error?: string | undefined;
+  readonly failureStage?:
+    | "transport"
+    | "http"
+    | "response_processing"
+    | undefined;
   readonly providerName?: string | undefined;
   readonly generationId?: string | undefined;
   readonly xRequestId?: string | undefined;
@@ -77,6 +100,43 @@ export function logModelRequestStarted(entry: ModelRequestStartedEntry): void {
     url: entry.url,
     started_at: entry.startedAt,
     request: entry.request,
+    ...(entry.requestBody !== undefined && { request_body: entry.requestBody }),
+  });
+}
+
+export function logModelRequestProgress(
+  entry: ModelRequestProgressEntry
+): void {
+  appendRecord({
+    event: "progress",
+    request_id: entry.requestId,
+    session_id: entry.sessionId ?? null,
+    attempt: entry.attempt,
+    model: entry.model,
+    url: entry.url,
+    started_at: entry.startedAt,
+    observed_at: entry.observedAt,
+    elapsed_ms: Math.round(entry.elapsedMs),
+    status: entry.status,
+    received_bytes: entry.receivedBytes,
+    ...(entry.timeToFirstOutputMs !== undefined && {
+      time_to_first_output_ms: Math.round(entry.timeToFirstOutputMs),
+    }),
+    ...(entry.contentDelta !== undefined &&
+      entry.contentDelta.length > 0 && {
+        content_delta: entry.contentDelta,
+      }),
+    ...(entry.reasoningDelta !== undefined &&
+      entry.reasoningDelta.length > 0 && {
+        reasoning_delta: entry.reasoningDelta,
+      }),
+    ...(entry.reasoningDetails !== undefined && {
+      reasoning_details: entry.reasoningDetails,
+    }),
+    ...(entry.toolCallDeltas !== undefined &&
+      entry.toolCallDeltas.length > 0 && {
+        tool_call_deltas: entry.toolCallDeltas,
+      }),
   });
 }
 
@@ -106,6 +166,17 @@ export function logModelRequestCompleted(
     ...(entry.xRequestId !== undefined && { x_request_id: entry.xRequestId }),
     ...(entry.cfRay !== undefined && { cf_ray: entry.cfRay }),
     ...(entry.error !== undefined && { error: entry.error }),
+    ...(entry.responseContent !== undefined && {
+      response_content: entry.responseContent,
+    }),
+    ...(entry.reasoning !== undefined && { reasoning: entry.reasoning }),
+    ...(entry.reasoningDetails !== undefined && {
+      reasoning_details: entry.reasoningDetails,
+    }),
+    ...(entry.toolCalls !== undefined && { tool_calls: entry.toolCalls }),
+    ...(entry.failureStage !== undefined && {
+      failure_stage: entry.failureStage,
+    }),
     ...(entry.response !== undefined &&
       status !== 200 &&
       status !== 201 && { response: entry.response }),

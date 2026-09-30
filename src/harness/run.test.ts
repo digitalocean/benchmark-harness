@@ -172,6 +172,7 @@ describe("runBenchmark", () => {
     expect(result.metrics.correctAnswers).toBe(1);
     expect(result.usage.outputTokens).toBe(30);
     expect(result.usage.generationTimeMs).toBe(600);
+    expect(result.sampleScores[0]?.generationTimeMs).toBe(100);
     expect(result.sampleScores[0]?.generationIds).toEqual(["fake-Q1 target B"]);
   });
   it("emits completed samples immediately when unordered is enabled", async () => {
@@ -317,6 +318,29 @@ describe("runBenchmark", () => {
       }).pipe(provide(layers))
     );
     expect(result.metrics.totalQuestions).toBe(1);
+  });
+  it("runs only explicitly selected sample ids", async () => {
+    const model = fakeModel(() => "Answer: B");
+    const solver = generate(model.service, { temperature: 0 });
+    const layers = mergeAll(
+      fakeDatasetLayer(SAMPLES),
+      layerSucceed(Solver, Solver.of(solver)),
+      layerSucceed(Scorer, Scorer.of(mcqScorer)),
+      model.layer,
+      noopProgressLayer,
+      noopCheckpointLayer
+    );
+    const result = await runPromise(
+      runBenchmark({
+        epochs: 1,
+        maxConcurrency: 1,
+        sampleIds: ["s-wrong"],
+      }).pipe(provide(layers))
+    );
+
+    expect(result.sampleScores.map(({ sampleId }) => sampleId)).toEqual([
+      "s-wrong",
+    ]);
   });
   it("scores a sample as Skipped (excluded from accuracy) when the model exhausts 429 retries", async () => {
     const service: ModelService = {

@@ -23,6 +23,7 @@ export interface GenerateConfig {
   readonly reasoningEffort?: ReasoningEffort;
   readonly costTier?: CostTier;
   readonly timeoutMs?: number;
+  readonly completionTimeoutMs?: number;
   readonly sort?: ProviderSort;
   readonly providerOnly?: readonly string[];
   readonly providerIgnore?: readonly string[];

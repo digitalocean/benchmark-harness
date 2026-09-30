@@ -1,7 +1,7 @@
 import type { ValueOf } from "../../internal/guards";
 import { isDefinedAndNotNull } from "../../internal/guards";
 import { z } from "../../internal/zod";
-import type { FixedTemperatureInferenceOverride } from "../benchmark-config";
+import type { InferenceOverride } from "../benchmark-config";
 
 export const RewardType = {
   Db: "DB",
@@ -187,7 +187,7 @@ export interface AirlineData {
 export interface SolverOpts {
   readonly endpointId?: string;
   readonly userModelConfig?: UserModelConfig;
-  readonly inference?: FixedTemperatureInferenceOverride;
+  readonly inference?: InferenceOverride;
 }
 
 export interface UserModelConfig {

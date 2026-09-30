@@ -54,6 +54,7 @@ describe("run artifact upload", () => {
           finishedAt: "2026-08-14T10:05:00.000Z",
           status: "succeeded",
           exitCode: 0,
+          failureReason: null,
         },
         { config: CONFIG, client }
       );
@@ -69,6 +70,7 @@ describe("run artifact upload", () => {
       const manifest = JSON.parse(uploaded.at(-1)?.content ?? "{}");
       expect(manifest.runId).toBe("run-123");
       expect(manifest.benchmark).toBe("gpqa_diamond");
+      expect(manifest.failureReason).toBeNull();
       expect(manifest.files).toHaveLength(4);
       expect(uploaded.at(-1)?.contentType).toBe("application/json");
     } finally {

@@ -89,6 +89,10 @@ describe("mandatory MySQL run metadata", () => {
     ) as RunRecord;
     expect(persisted.status).toBe("failed");
     expect(persisted.pid).toBeNull();
+    expect(persisted.failureReason).toContain("MySQL metadata write failed");
+    expect(
+      readFileSync(join(apiRoot, runId!, "logs/run.log"), "utf8")
+    ).toContain('"message":"Benchmark run failed"');
     expect(JSON.stringify(persisted)).not.toContain("payload-secret");
   });
 
@@ -116,6 +120,7 @@ describe("mandatory MySQL run metadata", () => {
       qualityScore: 1,
       disabled: false,
       cancelRequestedAt: null,
+      failureReason: null,
       uploadStatus: "complete",
       uploadError: null,
       uploadedAt: "2026-08-14T10:02:00.000Z",
@@ -202,6 +207,7 @@ describe("mandatory MySQL run metadata", () => {
       qualityScore: null,
       disabled: false,
       cancelRequestedAt: null,
+      failureReason: null,
       uploadStatus: "pending",
       uploadError: null,
       uploadedAt: null,

@@ -21,7 +21,10 @@ function record(): RunRecord {
         temperature: 0.5,
         maxTokens: 4096,
         reasoningEffort: "high",
+        completionTimeoutMs: 1_800_000,
         pinModel: true,
+        providerOnly: ["digitalocean"],
+        allowFallbacks: false,
       },
       execution: {
         epochs: 5,
@@ -46,6 +49,7 @@ function record(): RunRecord {
     qualityScore: 0.75,
     disabled: false,
     cancelRequestedAt: null,
+    failureReason: null,
     uploadStatus: "complete",
     uploadError: null,
     uploadedAt: "2026-08-14T10:06:00.000Z",
@@ -65,6 +69,7 @@ function row(): Record<string, unknown> {
     id: run.id,
     benchmark: "gpqa_diamond",
     model: "provider/model",
+    judge_model: null,
     base_url: "https://inference.example.com/v1",
     status: "succeeded",
     disabled: 0,
@@ -72,6 +77,7 @@ function row(): Record<string, unknown> {
     finished_at: new Date(run.finishedAt!),
     cancel_requested_at: null,
     exit_code: 0,
+    failure_reason: null,
     expected_questions: 20,
     completed_questions: 18,
     skipped_questions: 2,
@@ -91,9 +97,12 @@ function row(): Record<string, unknown> {
     max_tokens: 4096,
     reasoning_effort: "high",
     timeout_ms: null,
+    completion_timeout_ms: 1_800_000,
     endpoint_id: null,
     cost_tier: null,
     provider_sort: null,
+    provider_only: '["digitalocean"]',
+    allow_fallbacks: 0,
     cloudflare_version: null,
     cost_quality_tradeoff: null,
     pin_model: 1,
@@ -120,13 +129,83 @@ describe("MySQL run metadata store", () => {
       close: () => Promise.resolve(),
     };
 
-    await makeRunMetadataStore(executor, { attempts: 1 }).upsert(record());
+    const failedRecord: RunRecord = {
+      ...record(),
+      status: "failed",
+      failureReason:
+        "The benchmark process was killed by SIGKILL (exit code 137).",
+    };
+    await makeRunMetadataStore(executor, { attempts: 1 }).upsert(failedRecord);
 
     const serialized = JSON.stringify(capturedValues);
-    expect(capturedValues).toHaveLength(44);
+    expect(capturedValues).toHaveLength(54);
     expect(serialized).toContain("provider/model");
+    expect(serialized).toContain("digitalocean");
+    expect(serialized).toContain("killed by SIGKILL");
     expect(serialized).not.toContain("logs/api");
     expect(serialized).not.toContain("apiKey");
+  });
+
+  it("persists and restores every SWE Atlas track and judge model", async () => {
+    for (const benchmark of [
+      "swe_atlas_qa",
+      "swe_atlas_tw",
+      "swe_atlas_rf",
+    ] as const) {
+      const atlasRecord: RunRecord = {
+        ...record(),
+        args: {
+          ...record().args,
+          benchmark,
+          judgeModel: "judge/model",
+        },
+      };
+      let capturedValues: readonly unknown[] = [];
+      const executor: MysqlExecutor = {
+        execute: (_sql, values = []) => {
+          capturedValues = values;
+          return Promise.resolve();
+        },
+        query: <Row extends object>() =>
+          Promise.resolve([
+            {
+              ...row(),
+              benchmark,
+              judge_model: "judge/model",
+            },
+          ] as Row[]),
+        close: () => Promise.resolve(),
+      };
+      const store = makeRunMetadataStore(executor, { attempts: 1 });
+
+      await store.upsert(atlasRecord);
+      const metadata = await store.get(atlasRecord.id);
+
+      expect(capturedValues).toContain("judge/model");
+      expect(metadata?.args.benchmark).toBe(benchmark);
+      expect(metadata?.args.judgeModel).toBe("judge/model");
+    }
+  });
+
+  it("restores SWE-bench Verified without a judge model", async () => {
+    const executor: MysqlExecutor = {
+      execute: () => Promise.resolve(),
+      query: <Row extends object>() =>
+        Promise.resolve([
+          {
+            ...row(),
+            benchmark: "swe_bench_verified",
+          },
+        ] as Row[]),
+      close: () => Promise.resolve(),
+    };
+
+    const metadata = await makeRunMetadataStore(executor, {
+      attempts: 1,
+    }).get(record().id);
+
+    expect(metadata?.args.benchmark).toBe("swe_bench_verified");
+    expect(metadata?.args.judgeModel).toBeUndefined();
   });
 
   it("validates rows and returns secret-safe metadata", async () => {

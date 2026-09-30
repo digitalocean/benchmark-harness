@@ -63,6 +63,7 @@ export interface RunBenchmarkInput {
     readonly start?: number;
     readonly end?: number;
   };
+  readonly sampleIds?: readonly string[];
   readonly sessionId: string;
   readonly runAttempt?: number;
   readonly datasetRetry?: RetryConfig;
@@ -100,6 +101,7 @@ export function runBenchmarkById(
     maxConcurrency: input.maxConcurrency,
     ...(input.unordered !== undefined && { unordered: input.unordered }),
     ...(input.range !== undefined && { range: input.range }),
+    ...(input.sampleIds !== undefined && { sampleIds: input.sampleIds }),
     ...(benchmark.degradeSolverErrors !== undefined && {
       degradeSolverErrors: benchmark.degradeSolverErrors,
     }),
@@ -150,10 +152,9 @@ export function runBenchmarkById(
         )
           .then((resultsPath) => Either.right({ result, resultsPath }))
           .catch((storeErr) => {
-            wLog("Failed to persist benchmark results", {
-              error: String(storeErr),
-            });
-            return Either.right({ result, resultsPath: null });
+            const failure = `Failed to persist benchmark results: ${String(storeErr)}`;
+            wLog("Failed to persist benchmark results", { error: failure });
+            return Either.left(failure);
           });
       }
       return Either.right({ result, resultsPath: null });

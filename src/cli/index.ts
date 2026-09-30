@@ -67,6 +67,7 @@ interface CliArgs {
   readonly solverConfig?: string;
   readonly artifactDir?: string;
   readonly resumeId?: string;
+  readonly sampleIds: readonly string[];
   readonly imageDetail?: ImageDetail;
   readonly costTier?: CostTier;
 }
@@ -76,6 +77,10 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     const idx = argv.indexOf(flag);
     return idx !== -1 ? argv[idx + 1] : undefined;
   };
+  const getAll = (flag: string): string[] =>
+    argv.flatMap((value, index) =>
+      value === flag && argv[index + 1] !== undefined ? [argv[index + 1]!] : []
+    );
   const num = (flag: string): number | undefined => {
     const raw = get(flag);
     return raw !== undefined ? Number(raw) : undefined;
@@ -87,12 +92,13 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     start: num("--start"),
     end: num("--end"),
     epochs: num("--epochs"),
-    concurrency: num("--concurrency") ?? 8,
+    concurrency: num("--concurrency") ?? 3,
     unordered: argv.includes("--unordered"),
     endpointId: get("--endpoint-id"),
     solverConfig: get("--solver-config"),
     artifactDir: get("--artifact-dir"),
     resumeId: get("--resume-id"),
+    sampleIds: getAll("--sample-id"),
     imageDetail: validateImageDetail(get("--image-detail")),
     costTier: validateCostTier(get("--cost-tier")),
   };
@@ -240,9 +246,12 @@ function main(): Promise<void> {
       process.stderr.write(
         `Running ${args.benchmark}${args.model !== undefined ? ` on ${args.model}` : ""}${args.solverConfig !== undefined ? ` (solver-config=${args.solverConfig})` : ""}${artifactDir !== undefined ? ` (artifact-dir=${artifactDir})` : ""} (epochs=${epochs}, concurrency=${args.concurrency}, unordered=${args.unordered}${range !== undefined ? `, range=${range.start ?? 0}..${range.end ?? "end"}` : ""}, session=${sessionId})...\n`
       );
-      const total = yield* promise(() =>
-        resolveTotalEvaluations(args.benchmark, range, epochs)
-      );
+      const total =
+        args.sampleIds.length === 0
+          ? yield* promise(() =>
+              resolveTotalEvaluations(args.benchmark, range, epochs)
+            )
+          : args.sampleIds.length * epochs;
       const bar = new SingleBar(
         {
           format:
@@ -251,6 +260,7 @@ function main(): Promise<void> {
         Presets.shades_classic
       );
       let currentSample = "";
+      let lastLoggedProgressMilestone = 0;
       if (total !== undefined) {
         bar.start(total, 0, { sample: "" });
         writeProgress(0, total);
@@ -272,6 +282,9 @@ function main(): Promise<void> {
             }),
           ...(baseUrl && { baseUrl }),
           ...(range !== undefined && { range }),
+          ...(args.sampleIds.length > 0 && {
+            sampleIds: args.sampleIds,
+          }),
           sessionId,
           resultStore: makeLocalResultStore({
             dir:
@@ -283,6 +296,19 @@ function main(): Promise<void> {
               bar.update(processed, { sample: currentSample });
               if (total !== undefined) {
                 writeProgress(processed, total, skipped);
+                const percentage = (processed / total) * 100;
+                const milestone = Math.floor(percentage / 10) * 10;
+                if (milestone > lastLoggedProgressMilestone) {
+                  lastLoggedProgressMilestone = milestone;
+                  process.stderr.write(
+                    `[runtime] ${processed}/${total} evaluations processed (${percentage.toFixed(1)}%); ${skipped} skipped; memory=${JSON.stringify(process.memoryUsage())}\n`
+                  );
+                }
+                if (processed === total) {
+                  process.stderr.write(
+                    "[runtime] All evaluations are processed. Final aggregation and Parquet persistence are starting; the run is not complete until this stage succeeds.\n"
+                  );
+                }
               }
             },
             onSampleStart: (event) => {
@@ -513,6 +539,7 @@ export function buildBenchmarkConfig(opts: {
     case "swe_atlas_tw":
     case "swe_atlas_rf":
     case "deep_swe":
+    case "swe_bench_verified":
     case "wandr":
     case "search_browsecomp":
     case "search_hle":

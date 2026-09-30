@@ -42,6 +42,7 @@ import {
   resetGenerationIds,
 } from "../../runtime/generation-ids";
 import { getOriHarness, ORI_HARNESSES } from "../agent-cli/harness";
+import { isDigitalOceanInferenceBaseUrl } from "../agent-cli/runner";
 import { readTerminalBenchMeta } from "./dataset";
 import type { OriSolverOpts } from "./ori-solver";
 import { oriSolver } from "./ori-solver";
@@ -433,20 +434,26 @@ describe("terminal-bench ori solver", () => {
     expect(finalState.sample.metadata?.["agentIsError"]).toBe(true);
   });
 
-  it("passes the model and api key through the exec environment", async () => {
+  it("passes model credentials and endpoint through the exec environment", async () => {
     const execCalls: ExecCalls = [];
     const layer = makeTerminalBenchFakeSandboxLayer({
       reward: 1,
       execCalls,
       agentExitCode: 0,
     });
-    await runOriSolver(layer);
+    await runOriSolver(layer, {
+      ...SOLVER_OPTS,
+      baseUrl: "https://inference.do-ai.run/v1",
+    });
     const agentCall = execCalls[0];
     if (agentCall === undefined) {
       throw new Error("fake sandbox did not capture the agent invocation");
     }
     expect(agentCall.env["TB_MODEL"]).toBe("anthropic/claude-opus-5");
     expect(agentCall.env["OPENROUTER_API_KEY"]).toBe("sk-test");
+    expect(agentCall.env["ORI_OPENROUTER_BASE_URL"]).toBe(
+      "https://inference.do-ai.run/v1"
+    );
     expect(agentCall.argv[2]).toContain('ori claude --model "$TB_MODEL"');
     expect(agentCall.argv[2]).toContain("export IS_SANDBOX=1");
     expect(agentCall.argv[2]).toContain("--permission-mode bypassPermissions");
@@ -820,6 +827,81 @@ describe("terminal-bench pi via ori", () => {
     expect(script).toContain("--print --mode json --no-session");
     expect(script).not.toContain("--provider");
     expect(script).not.toContain("models.json");
+  });
+
+  it("preserves an exact DigitalOcean model id with a custom PI provider", async () => {
+    const execCalls: ExecCalls = [];
+    const oriInstallScripts: string[] = [];
+    const layer = makeTerminalBenchFakeSandboxLayer({
+      reward: 1,
+      execCalls,
+      oriInstallScripts,
+      agentExitCode: 0,
+    });
+    const solverLayer = layerEffect(Solver)(
+      gen(function* () {
+        const sessionFactory = yield* SandboxSession;
+        return Solver.of(
+          oriSolver(
+            sessionFactory,
+            {
+              ...SOLVER_OPTS,
+              model: "glm-5.3-flash",
+              baseUrl: "https://inference.do-ai.run/v1",
+              agentReasoningEffort: "high",
+            },
+            getOriHarness("pi")
+          )
+        );
+      })
+    );
+    await runPromise(
+      gen(function* () {
+        const solver = yield* Solver;
+        return yield* solver(sampleState());
+      }).pipe(
+        provide(
+          layerMergeAll(
+            solverLayer.pipe(layerProvide(layer)),
+            noopProgressLayer,
+            noopCheckpointLayer
+          )
+        )
+      )
+    );
+
+    const agentCall = execCalls[0];
+    expect(agentCall?.env["TB_MODEL"]).toBe("glm-5.3-flash");
+    expect(agentCall?.env["TB_INFERENCE_BASE_URL"]).toBe(
+      "https://inference.do-ai.run/v1"
+    );
+    const script = agentCall?.argv[2] ?? "";
+    expect(script).toContain(
+      'pi --provider benchmark-custom --model "$TB_MODEL"'
+    );
+    expect(script).toContain("--thinking high");
+    expect(script).toContain("models.json");
+    expect(script).toContain('api: "openai-responses"');
+    expect(script).toContain("id: model");
+    expect(script).not.toContain('ori pi --model "$TB_MODEL"');
+    expect(oriInstallScripts).toEqual([]);
+  });
+
+  it("recognizes only DigitalOcean inference hosts for direct PI routing", () => {
+    expect(
+      isDigitalOceanInferenceBaseUrl("https://inference.do-ai.run/v1")
+    ).toBe(true);
+    expect(
+      isDigitalOceanInferenceBaseUrl("https://inference.do-ai-test.run/v1")
+    ).toBe(true);
+    expect(isDigitalOceanInferenceBaseUrl("https://openrouter.ai/api/v1")).toBe(
+      false
+    );
+    expect(
+      isDigitalOceanInferenceBaseUrl(
+        "https://inference.do-ai.run.attacker.example/v1"
+      )
+    ).toBe(false);
   });
 
   it("reports a wall-clock generation time since pi emits no duration", async () => {

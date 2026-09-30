@@ -11,7 +11,6 @@ const CATALOG_URL = "https://api.digitalocean.com/v2/gen-ai/models/catalog";
 const OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models";
 const CATALOG_CACHE_MS = 5 * 60 * 1000;
 const OPENROUTER_CATALOG_CACHE_MS = 2 * 60 * 60 * 1000;
-const DIGITALOCEAN_PROVIDER = "MODEL_PROVIDER_DIGITALOCEAN";
 
 const ModelCatalogPageSchema = z.object({
   data: z.array(
@@ -132,7 +131,6 @@ export function makeModelCatalogClient(
       return openRouterCached.models;
     }
     const url = new URL(OPENROUTER_CATALOG_URL);
-    url.searchParams.set("providers", "digitalocean");
     const response = await fetcher(url, {
       headers: { Authorization: `Bearer ${openRouterCatalogToken(env)}` },
     });
@@ -172,10 +170,6 @@ export function makeModelCatalogClient(
       }
       const models = pages
         .flatMap(({ data }) => data)
-        .filter(
-          ({ provider }) =>
-            provider === undefined || provider === DIGITALOCEAN_PROVIDER
-        )
         .sort((a, b) => timestamp(b.created_at) - timestamp(a.created_at))
         .map(({ model_id: modelId }) => modelId)
         .filter((modelId, index, all) => all.indexOf(modelId) === index);

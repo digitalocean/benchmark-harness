@@ -23,6 +23,7 @@ import { DEFAULT_STEP_LIMIT as DEEP_SWE_DEFAULT_STEP_LIMIT } from "./deep-swe/sc
 import { DracoPanelConfigSchema } from "./draco/schemas";
 import { SearchLaneConfigSchema } from "./search/core/config";
 import { DEFAULT_JUDGE_MODEL, DEFAULT_STEP_LIMIT } from "./swe-atlas/schema";
+import { DEFAULT_STEP_LIMIT as SWE_BENCH_DEFAULT_STEP_LIMIT } from "./swe-bench/schema";
 import { BankingRetrievalConfigSchema } from "./tau3-bench-banking/retrieval-config";
 import {
   DEFAULT_TERMINAL_BENCH_AGENT,
@@ -45,6 +46,7 @@ export const InferenceOverrideSchema = z.object({
   reasoningEffort: z.enum(REASONING_EFFORTS).optional(),
   costTier: z.enum(COST_TIERS).optional(),
   timeoutMs: z.number().optional(),
+  completionTimeoutMs: z.number().positive().optional(),
   sort: z.nativeEnum(ProviderSort).optional(),
   providerOnly: z.array(z.string()).optional(),
   providerIgnore: z.array(z.string()).optional(),
@@ -77,7 +79,7 @@ export const GpqaOptionsSchema = z.object({});
 
 export const GpqaBenchmarkConfigSchema = z.object({
   benchmarkId: z.literal("gpqa_diamond"),
-  ...FixedTemperatureBenchmarkBaseSchema.shape,
+  ...ModelBenchmarkBaseSchema.shape,
   ...GpqaOptionsSchema.shape,
 });
 
@@ -101,7 +103,7 @@ export const TauBenchOptionsSchema = z.object({
 
 export const TauBenchAirlineConfigSchema = z.object({
   benchmarkId: z.literal("tau_bench_verified_airline"),
-  ...FixedTemperatureBenchmarkBaseSchema.shape,
+  ...ModelBenchmarkBaseSchema.shape,
   ...TauBenchOptionsSchema.shape,
 });
 
@@ -246,6 +248,19 @@ export const DeepSweConfigSchema = z.object({
 
 export type DeepSweConfig = z.infer<typeof DeepSweConfigSchema>;
 
+export const SweBenchOptionsSchema = z.object({
+  stepLimit: zInt().default(SWE_BENCH_DEFAULT_STEP_LIMIT),
+  ...AgenticOptionsSchema.shape,
+});
+
+export const SweBenchConfigSchema = z.object({
+  benchmarkId: z.literal("swe_bench_verified"),
+  ...ModelBenchmarkBaseSchema.shape,
+  ...SweBenchOptionsSchema.shape,
+});
+
+export type SweBenchConfig = z.infer<typeof SweBenchConfigSchema>;
+
 export const WandrConfigSchema = z.object({
   benchmarkId: z.literal("wandr"),
   ...ModelBenchmarkBaseSchema.shape,
@@ -333,6 +348,7 @@ export const NativeBenchmarkRunConfigSchema = z.discriminatedUnion(
     SweAtlasTwConfigSchema,
     SweAtlasRfConfigSchema,
     DeepSweConfigSchema,
+    SweBenchConfigSchema,
     WandrConfigSchema,
     BrowseCompBenchmarkConfigSchema,
     HleBenchmarkConfigSchema,
@@ -367,6 +383,7 @@ export const BENCHMARK_OPTIONS_SCHEMAS = {
   swe_atlas_tw: SweAtlasOptionsSchema,
   swe_atlas_rf: SweAtlasOptionsSchema,
   deep_swe: DeepSweOptionsSchema,
+  swe_bench_verified: SweBenchOptionsSchema,
   wandr: WandrOptionsSchema,
   search_browsecomp: SearchBenchmarkOptionsSchema,
   search_hle: SearchBenchmarkOptionsSchema,
