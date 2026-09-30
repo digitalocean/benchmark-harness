@@ -16,7 +16,6 @@ export interface SampleScore {
   readonly requestBody?: Readonly<Record<string, unknown>>;
   readonly generationIds?: readonly string[];
   readonly generationTimeMs?: number;
-  /** Per-sample (task×epoch) model usage, including cache-read tokens when present. */
   readonly usage?: ModelUsage;
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly input?: string;

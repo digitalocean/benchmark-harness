@@ -136,7 +136,6 @@ export interface UsageTotals {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly totalTokens: number;
-  /** Cache-read tokens; subset of inputTokens when the provider reports it. */
   readonly cacheReadTokens: number;
   readonly reasoningTokens: number;
   readonly totalCost: number;
