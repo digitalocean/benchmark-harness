@@ -12,6 +12,7 @@ import {
 import type { Dataset } from "../../harness/dataset";
 import { Scorer } from "../../harness/scorer";
 import { Solver } from "../../harness/solver";
+import { definedValues } from "../../internal/guards";
 import {
   makeResponsesModelLayer,
   ResponsesModel,
@@ -66,24 +67,25 @@ function makeSweAtlasLayer(
       new Error(`${expectedId} received mismatched benchmarkConfig`)
     );
   }
-  const datasetLayer = makeSweAtlasDatasetLayer({
-    track,
-    ...(benchmarkConfig.taskSubset !== undefined && {
+  const datasetLayer = makeSweAtlasDatasetLayer(
+    definedValues({
+      track,
       taskSubset: benchmarkConfig.taskSubset,
-    }),
-    ...(benchmarkConfig.maxAgentTimeoutSec !== undefined && {
       maxAgentTimeoutSec: benchmarkConfig.maxAgentTimeoutSec,
-    }),
-  });
+    })
+  );
   const modelLayer =
     input.responsesModelLayer ??
-    makeResponsesModelLayer({
-      model: benchmarkConfig.model,
-      apiKey: input.apiKey,
-      ...(input.baseUrl !== undefined && { baseUrl: input.baseUrl }),
-      sessionId: input.sessionId,
-      ...(input.modelRetry !== undefined && { retry: input.modelRetry }),
-    });
+    makeResponsesModelLayer(
+      definedValues({
+        model: benchmarkConfig.model,
+        apiKey: input.apiKey,
+        baseUrl: input.baseUrl,
+        sessionId: input.sessionId,
+        retry: input.modelRetry,
+        traceHeaders: input.traceHeaders,
+      })
+    );
   let sandboxBackend: SweAtlasSandboxBackend;
   try {
     sandboxBackend = sweAtlasSandboxBackend(
@@ -106,62 +108,54 @@ function makeSweAtlasLayer(
       const model = yield* ResponsesModel;
       const sessionFactory = yield* SandboxSession;
       return Solver.of(
-        makeSweAtlasSolver(model, sessionFactory, {
-          track,
-          model: benchmarkConfig.model,
-          apiKey: input.apiKey,
-          judgeModel:
-            process.env["SWE_ATLAS_JUDGE_MODEL"] ?? benchmarkConfig.judgeModel,
-          judgeApiKey: process.env["SWE_ATLAS_JUDGE_API_KEY"] ?? input.apiKey,
-          judgeBaseUrl:
-            process.env["SWE_ATLAS_JUDGE_BASE_URL"] ?? JUDGE_BASE_URL,
-          stepLimit: benchmarkConfig.stepLimit,
-          agent: benchmarkConfig.agent,
-          agentCli: {
+        makeSweAtlasSolver(
+          model,
+          sessionFactory,
+          definedValues({
+            track,
             model: benchmarkConfig.model,
             apiKey: input.apiKey,
-            ...(input.baseUrl !== undefined && { baseUrl: input.baseUrl }),
-            sessionId: input.sessionId,
-            ...(benchmarkConfig.endpointId !== undefined && {
+            judgeModel:
+              process.env["SWE_ATLAS_JUDGE_MODEL"] ??
+              benchmarkConfig.judgeModel,
+            judgeApiKey: process.env["SWE_ATLAS_JUDGE_API_KEY"] ?? input.apiKey,
+            judgeBaseUrl:
+              process.env["SWE_ATLAS_JUDGE_BASE_URL"] ?? JUDGE_BASE_URL,
+            stepLimit: benchmarkConfig.stepLimit,
+            agent: benchmarkConfig.agent,
+            agentCli: definedValues({
+              model: benchmarkConfig.model,
+              apiKey: input.apiKey,
+              baseUrl: input.baseUrl,
+              sessionId: input.sessionId,
               endpointId: benchmarkConfig.endpointId,
-            }),
-            ...(benchmarkConfig.agentPackage !== undefined && {
               agentPackage: benchmarkConfig.agentPackage,
-            }),
-            oriInstallUrl: benchmarkConfig.oriInstallUrl,
-            agentReasoningEffort: benchmarkConfig.agentReasoningEffort,
-            oriChannel: benchmarkConfig.oriChannel,
-            ...(benchmarkConfig.systemPrompt !== undefined && {
+              oriInstallUrl: benchmarkConfig.oriInstallUrl,
+              agentReasoningEffort: benchmarkConfig.agentReasoningEffort,
+              oriChannel: benchmarkConfig.oriChannel,
               systemPrompt: benchmarkConfig.systemPrompt,
-            }),
-            ...(benchmarkConfig.appendSystemPrompt !== undefined && {
               appendSystemPrompt: benchmarkConfig.appendSystemPrompt,
-            }),
-            ...(benchmarkConfig.allowedTools !== undefined && {
               allowedTools: benchmarkConfig.allowedTools,
-            }),
-            ...(benchmarkConfig.disallowedTools !== undefined && {
               disallowedTools: benchmarkConfig.disallowedTools,
+              isolateAgentConfig: benchmarkConfig.isolateAgentConfig,
             }),
-            isolateAgentConfig: benchmarkConfig.isolateAgentConfig,
-          },
-          ...(benchmarkConfig.endpointId !== undefined && {
             endpointId: benchmarkConfig.endpointId,
-          }),
-          inference: {
-            temperature: benchmarkConfig.temperature,
-            maxTokens: benchmarkConfig.maxTokens,
-            reasoningEffort: benchmarkConfig.reasoningEffort,
-            timeoutMs: benchmarkConfig.timeoutMs,
-            sort: benchmarkConfig.sort,
-            providerOnly: benchmarkConfig.providerOnly,
-            providerIgnore: benchmarkConfig.providerIgnore,
-            allowFallbacks: benchmarkConfig.allowFallbacks,
-            cloudflareVersion: benchmarkConfig.cloudflareVersion,
-            costTier: benchmarkConfig.costTier,
-            costQualityTradeoff: benchmarkConfig.costQualityTradeoff,
-          },
-        })
+            inference: {
+              temperature: benchmarkConfig.temperature,
+              maxTokens: benchmarkConfig.maxTokens,
+              reasoningEffort: benchmarkConfig.reasoningEffort,
+              timeoutMs: benchmarkConfig.timeoutMs,
+              completionTimeoutMs: benchmarkConfig.completionTimeoutMs,
+              sort: benchmarkConfig.sort,
+              providerOnly: benchmarkConfig.providerOnly,
+              providerIgnore: benchmarkConfig.providerIgnore,
+              allowFallbacks: benchmarkConfig.allowFallbacks,
+              cloudflareVersion: benchmarkConfig.cloudflareVersion,
+              costTier: benchmarkConfig.costTier,
+              costQualityTradeoff: benchmarkConfig.costQualityTradeoff,
+            },
+          })
+        )
       );
     })
   );

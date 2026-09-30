@@ -16,7 +16,7 @@ import {
 } from "effect/Effect";
 
 import type {
-  ChatMessage,
+  ModelMessage,
   ModelError,
   ModelOutput,
   ModelUsage,
@@ -25,7 +25,7 @@ import type {
 import { MessageRole, SolverError } from "../../harness/core";
 import type { SolverService } from "../../harness/solver";
 import { Either } from "../../internal/either";
-import { isDefinedAndNotNull } from "../../internal/guards";
+import { definedValues, isDefinedAndNotNull } from "../../internal/guards";
 import { parseSchema, z } from "../../internal/zod";
 import type { JudgeConfig } from "../../judge/judge";
 import { judgeCall } from "../../judge/judge";
@@ -227,27 +227,21 @@ function cachedSend(opts: {
 }
 
 function dracoJudgeConfig(config: DracoPanelConfig): JudgeConfig {
-  return {
+  return definedValues({
     judgeModel: config.judgeModel,
     temperature: config.judgeTemperature ?? 0.2,
     timeoutMs: config.timeout * 1000,
     retry: { maxRetries: 0 },
-    ...(config.judgeReasoningEffort !== undefined && {
-      reasoningEffort: config.judgeReasoningEffort,
-    }),
-    ...(config.versionOverride !== undefined && {
-      versionOverride: config.versionOverride,
-    }),
-  };
+    reasoningEffort: config.judgeReasoningEffort,
+    versionOverride: config.versionOverride,
+  });
 }
 
 function sendOptions(config: DracoPanelConfig): ResponsesSendOptions {
-  return {
+  return definedValues({
     timeoutMs: config.timeout * 1000,
-    ...(config.versionOverride !== undefined && {
-      versionOverride: config.versionOverride,
-    }),
-  };
+    versionOverride: config.versionOverride,
+  });
 }
 
 function runJudge(opts: {
@@ -476,15 +470,18 @@ function completedState(
   generation: GenerationResult,
   verdicts: JudgeRun[]
 ): TaskState {
-  const messages: ChatMessage[] = [
+  const messages: ModelMessage[] = [
     { role: MessageRole.User, content: state.sample.input },
     ...(generation.content
       ? [
           {
             role: MessageRole.Assistant,
             content: generation.content,
-            ...(generation.citations.length > 0 && {
-              citations: generation.citations,
+            ...definedValues({
+              citations:
+                generation.citations.length > 0
+                  ? generation.citations
+                  : undefined,
             }),
           } as const,
         ]
@@ -523,7 +520,11 @@ function dracoUsageToModelUsage(
   const { totalCost: _perCallCost, ...tokens } = mapped;
   return {
     ...tokens,
-    ...(isDefinedAndNotNull(generation.cost) && { totalCost: generation.cost }),
+    ...definedValues({
+      totalCost: isDefinedAndNotNull(generation.cost)
+        ? generation.cost
+        : undefined,
+    }),
   };
 }
 

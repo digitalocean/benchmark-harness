@@ -1,3 +1,4 @@
+import type { ReasoningEffort } from "../../harness/constants";
 import type { ValueOf } from "../../internal/guards";
 import { isDefinedAndNotNull } from "../../internal/guards";
 import { z } from "../../internal/zod";
@@ -196,4 +197,5 @@ export interface UserModelConfig {
   readonly fallbackModel?: string;
   readonly baseUrl?: string;
   readonly sessionId?: string;
+  readonly reasoningEffort: ReasoningEffort;
 }

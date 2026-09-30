@@ -16,6 +16,7 @@ import {
 import { getOrThrow } from "effect/Option";
 
 import { assertFailure } from "../../test/helpers/exit-asserts";
+import { isSystemicModelError } from "../harness/core";
 import { assertRight } from "../internal/testing";
 import { parseSchema, z } from "../internal/zod";
 import {
@@ -28,8 +29,10 @@ import type { ModelErrorIdentifiers } from "./request-identifiers";
 import {
   consumeStream,
   extractMessageText,
+  extractReasoning,
   findOutputItems,
   makeResponsesLayer,
+  providerNameFromErrorBody,
   Responses,
   ResponsesError,
   toModelError,
@@ -115,6 +118,176 @@ describe("extractMessageText", () => {
     expect(extractMessageText([])).toBe("");
   });
 });
+describe("extractReasoning", () => {
+  it("normalizes plaintext reasoning content into readable reasoning and text details", () => {
+    expect(
+      extractReasoning([
+        {
+          type: "reasoning",
+          id: "rs_1",
+          content: [
+            { type: "reasoning_text", text: "1. Analyze the request" },
+            { type: "reasoning_text", text: "2. Answer" },
+          ],
+          summary: [],
+        },
+        { type: "message", content: [{ type: "output_text", text: "B" }] },
+      ])
+    ).toEqual({
+      reasoning: "1. Analyze the request\n\n2. Answer",
+      reasoningDetails: [
+        {
+          type: "reasoning.text",
+          text: "1. Analyze the request",
+          id: "rs_1",
+        },
+        { type: "reasoning.text", text: "2. Answer", id: "rs_1" },
+      ],
+    });
+  });
+
+  it("carries the signature and format of a plaintext item", () => {
+    expect(
+      extractReasoning([
+        {
+          type: "reasoning",
+          id: "rs_1",
+          format: "anthropic-claude-v1",
+          signature: "sig",
+          content: [{ type: "reasoning_text", text: "thought" }],
+        },
+      ])
+    ).toEqual({
+      reasoning: "thought",
+      reasoningDetails: [
+        {
+          type: "reasoning.text",
+          text: "thought",
+          id: "rs_1",
+          format: "anthropic-claude-v1",
+          signature: "sig",
+        },
+      ],
+    });
+  });
+
+  it("keeps an encrypted blob as a detail and emits no readable reasoning", () => {
+    expect(
+      extractReasoning([
+        {
+          type: "reasoning",
+          id: "rs_2",
+          encrypted_content: "gAAAAAopaque",
+          summary: [],
+        },
+      ])
+    ).toEqual({
+      reasoningDetails: [
+        { type: "reasoning.encrypted", data: "gAAAAAopaque", id: "rs_2" },
+      ],
+    });
+  });
+
+  it("falls back to provider summaries when no plaintext is exposed", () => {
+    expect(
+      extractReasoning([
+        {
+          type: "reasoning",
+          id: "rs_3",
+          summary: [
+            { type: "summary_text", text: "Considered two options" },
+            { type: "summary_text", text: "Picked the second" },
+          ],
+          encrypted_content: "blob",
+        },
+      ])
+    ).toEqual({
+      reasoning: "Considered two options\n\nPicked the second",
+      reasoningDetails: [
+        {
+          type: "reasoning.summary",
+          summary: "Considered two options",
+          id: "rs_3",
+        },
+        {
+          type: "reasoning.summary",
+          summary: "Picked the second",
+          id: "rs_3",
+        },
+        { type: "reasoning.encrypted", data: "blob", id: "rs_3" },
+      ],
+    });
+  });
+
+  it("prefers plaintext over summaries for readable reasoning while keeping both details", () => {
+    const result = extractReasoning([
+      {
+        type: "reasoning",
+        content: [{ type: "reasoning_text", text: "raw thought" }],
+        summary: [{ type: "summary_text", text: "short summary" }],
+      },
+    ]);
+    expect(result.reasoning).toBe("raw thought");
+    expect(result.reasoningDetails).toEqual([
+      { type: "reasoning.text", text: "raw thought" },
+      { type: "reasoning.summary", summary: "short summary" },
+    ]);
+  });
+
+  it("joins plaintext across multiple reasoning items in wire order", () => {
+    expect(
+      extractReasoning([
+        {
+          type: "reasoning",
+          content: [{ type: "reasoning_text", text: "first" }],
+        },
+        { type: "function_call", call_id: "c1", name: "t", arguments: "{}" },
+        {
+          type: "reasoning",
+          content: [{ type: "reasoning_text", text: "second" }],
+        },
+      ]).reasoning
+    ).toBe("first\n\nsecond");
+  });
+
+  it("returns nothing when no reasoning item is present", () => {
+    expect(
+      extractReasoning([
+        { type: "message", content: [{ type: "output_text", text: "B" }] },
+      ])
+    ).toEqual({});
+  });
+
+  it("returns nothing for a reasoning item carrying no reasoning at all", () => {
+    expect(
+      extractReasoning([
+        { type: "reasoning", id: "rs_4", summary: [], content: [] },
+      ])
+    ).toEqual({});
+  });
+
+  it("skips malformed parts rather than repairing them", () => {
+    expect(
+      extractReasoning([
+        {
+          type: "reasoning",
+          content: [
+            "not-an-object",
+            { type: "reasoning_text" },
+            { type: "reasoning_text", text: "" },
+            { type: "reasoning_text", text: 42 },
+            { type: "reasoning_text", text: "kept" },
+          ],
+          summary: "not-an-array",
+          encrypted_content: 7,
+        },
+      ])
+    ).toEqual({
+      reasoning: "kept",
+      reasoningDetails: [{ type: "reasoning.text", text: "kept" }],
+    });
+  });
+});
 describe("findOutputItems", () => {
   it("returns all items matching the type", () => {
     const output = [
@@ -151,6 +324,52 @@ describe("toModelError", () => {
       new ResponsesError({ message: "permanent", retryable: false })
     );
     expect(err.status).toBeUndefined();
+  });
+  it("carries the upstream provider name so a forwarded 403 is not treated as systemic", () => {
+    const err = toModelError(
+      new ResponsesError({
+        message: "forbidden",
+        retryable: false,
+        status: 403,
+        providerName: "Google AI Studio",
+      })
+    );
+    expect(err.providerName).toBe("Google AI Studio");
+    expect(isSystemicModelError(err)).toBe(false);
+    expect(
+      isSystemicModelError(
+        toModelError(
+          new ResponsesError({
+            message: "forbidden",
+            retryable: false,
+            status: 403,
+          })
+        )
+      )
+    ).toBe(true);
+  });
+});
+describe("providerNameFromErrorBody", () => {
+  it("reads provider_name from an OpenRouter provider error body", () => {
+    const body = JSON.stringify({
+      error: {
+        message: "Provider returned error",
+        code: 403,
+        metadata: {
+          raw: "PERMISSION_DENIED",
+          provider_name: "Google AI Studio",
+        },
+      },
+    });
+    expect(providerNameFromErrorBody(body)).toBe("Google AI Studio");
+  });
+  it("returns undefined for non-provider or non-JSON bodies", () => {
+    expect(
+      providerNameFromErrorBody(
+        JSON.stringify({ error: { message: "User not found.", code: 401 } })
+      )
+    ).toBeUndefined();
+    expect(providerNameFromErrorBody("<html>upstream</html>")).toBeUndefined();
   });
 });
 describe("usageFromResponses", () => {
@@ -470,6 +689,31 @@ describe("consumeStream", () => {
     expect(error.message.match(/cf_ray=ray-123/g)).toHaveLength(1);
     expect(error.message.match(/x_request_id=req-456/g)).toHaveLength(1);
   });
+  it("extracts the provider name from a forwarded provider error body", async () => {
+    const body = JSON.stringify({
+      error: {
+        message: "Provider returned error",
+        code: 403,
+        metadata: {
+          raw: "PERMISSION_DENIED",
+          provider_name: "Google AI Studio",
+        },
+      },
+    });
+    async function* stream(): AsyncGenerator<StreamEvents> {
+      throw new OpenRouterError("upstream", {
+        response: new Response(body, { status: 403 }),
+        request: new Request("https://example.test"),
+        body,
+      });
+    }
+    const error = await consumeStream(stream()).catch(
+      (cause: unknown) => cause
+    );
+    assert(error instanceof ResponsesError);
+    expect(error.status).toBe(403);
+    expect(error.providerName).toBe("Google AI Studio");
+  });
 });
 describe("makeResponsesLayer", () => {
   it("records generation ids and applies default or explicit prompt caching", async () => {
@@ -536,6 +780,74 @@ describe("makeResponsesLayer", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it.each(["agentic", "static"] as const)(
+    "serializes input_video.processing=%s onto the wire",
+    async (processing) => {
+      const originalFetch = globalThis.fetch;
+      const stream = await readStreamFixture();
+      const capturedBodies: unknown[] = [];
+      globalThis.fetch = async (input, init) => {
+        const request =
+          input instanceof Request ? input : new Request(input, init);
+        capturedBodies.push(await request.clone().json());
+        return new Response(stream, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      };
+      try {
+        await runPromise(
+          gen(function* run() {
+            const responses = yield* Responses;
+            yield* responses.send(
+              {
+                model: "m",
+                input: [
+                  {
+                    type: "message",
+                    role: "user",
+                    content: [
+                      {
+                        type: "input_video",
+                        videoUrl: "https://example.test/clip.mp4",
+                        processing,
+                      },
+                    ],
+                  },
+                ],
+              },
+              { timeoutMs: 1000 }
+            );
+          }).pipe(
+            provide(
+              makeResponsesLayer({
+                apiKey: "sk-test",
+                baseUrl: "https://example.test",
+              })
+            )
+          )
+        );
+        expect(capturedBodies[0]).toMatchObject({
+          input: [
+            {
+              type: "message",
+              role: "user",
+              content: [
+                {
+                  type: "input_video",
+                  video_url: "https://example.test/clip.mp4",
+                  processing,
+                },
+              ],
+            },
+          ],
+        });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
   it("records the cache source id from the response header on cache hits", async () => {
     const originalFetch = globalThis.fetch;
     const stream = await readStreamFixture();

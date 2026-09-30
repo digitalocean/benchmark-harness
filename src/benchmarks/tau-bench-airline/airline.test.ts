@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 
 import { FetchHttpClient, HttpClient } from "@effect/platform";
 import {
@@ -18,6 +18,10 @@ import {
 import { initialTaskState, MessageRole, ScoreValue } from "../../harness/core";
 import type { ModelService } from "../../harness/model";
 import { isRecord } from "../../internal/guards";
+import { assertRight } from "../../internal/testing";
+import { parseSchema } from "../../internal/zod";
+import type { ResponsesModelService } from "../../providers/responses-model";
+import { TauBenchAirlineConfigSchema } from "../benchmark-config";
 import { benchmarkIds, getBenchmark } from "../registry";
 import { compareActionWithToolCall } from "./action-match";
 import {
@@ -25,7 +29,11 @@ import {
   resolveAirlineUserModel,
   TAU_BENCH_AIRLINE_ID,
 } from "./benchmark";
-import { seedAirlineDataCache } from "./environment";
+import {
+  ensureAirlineData,
+  loadAirlineData,
+  seedAirlineDataCache,
+} from "./environment";
 import { evaluateSimulation } from "./evaluator";
 import { airlineScorer } from "./scorer";
 import { airlineSolver, TerminationReason } from "./solver";
@@ -130,6 +138,29 @@ describe("tau_bench_verified_airline registry", () => {
         "https://openrouter.ai/api/v1"
       )
     ).toBe("openai/gpt-5.4-mini");
+  });
+});
+describe("tau_bench_verified_airline config", () => {
+  it("defaults the user simulator reasoning effort independently", () => {
+    const result = parseSchema(TauBenchAirlineConfigSchema, {
+      benchmarkId: "tau_bench_verified_airline",
+      model: "openai/gpt-4o-mini",
+      reasoningEffort: "low",
+    });
+    assertRight(result);
+    expect(result.right.reasoningEffort).toBe("low");
+    expect(result.right.userReasoningEffort).toBe("medium");
+  });
+  it("allows overriding the user simulator reasoning effort", () => {
+    const result = parseSchema(TauBenchAirlineConfigSchema, {
+      benchmarkId: "tau_bench_verified_airline",
+      model: "openai/gpt-4o-mini",
+      reasoningEffort: "low",
+      userReasoningEffort: "high",
+    });
+    assertRight(result);
+    expect(result.right.reasoningEffort).toBe("low");
+    expect(result.right.userReasoningEffort).toBe("high");
   });
 });
 describe("airlineRecordToSample", () => {
@@ -277,6 +308,18 @@ describe("airlineSolver", () => {
           choices: [{ message: { content: "I need help with my flight." } }],
         });
       };
+      const userModel: ResponsesModelService = {
+        generate: () =>
+          sync(() => {
+            userSimulatorCalls += 1;
+            return {
+              outputItems: [],
+              functionCalls: [],
+              text: "I need help with my flight.",
+              generationTimeMs: 1,
+            };
+          }),
+      };
       const model: ModelService = {
         generate: () =>
           sync(() => {
@@ -302,6 +345,7 @@ describe("airlineSolver", () => {
             const dataFetchLock = yield* makeSemaphore(1);
             return yield* airlineSolver({
               model,
+              userModel,
               client,
               dataFetchLock,
               opts: {
@@ -309,6 +353,7 @@ describe("airlineSolver", () => {
                   apiKey: "test",
                   model: "gemini-2.5-flash",
                   baseUrl: "https://example.test",
+                  reasoningEffort: "medium",
                 },
               },
             })(
@@ -371,6 +416,21 @@ describe("airlineSolver", () => {
         ],
       });
     };
+    const userModel: ResponsesModelService = {
+      generate: () =>
+        sync(() => {
+          userSimulatorCalls += 1;
+          return {
+            outputItems: [],
+            functionCalls: [],
+            text:
+              userSimulatorCalls === 1
+                ? "I need help with my flight."
+                : "###STOP###",
+            generationTimeMs: 1,
+          };
+        }),
+    };
     const model: ModelService = {
       generate: () =>
         sync(() => {
@@ -390,6 +450,7 @@ describe("airlineSolver", () => {
           const dataFetchLock = yield* makeSemaphore(1);
           return yield* airlineSolver({
             model,
+            userModel,
             client,
             dataFetchLock,
             opts: {
@@ -397,6 +458,7 @@ describe("airlineSolver", () => {
                 apiKey: "test",
                 model: "gemini-2.5-flash",
                 baseUrl: "https://example.test",
+                reasoningEffort: "medium",
               },
             },
           })(
@@ -614,6 +676,32 @@ describe("evaluateSimulation", () => {
         terminationReason: USER_STOP,
       }).reward
     ).toBe(0);
+  });
+});
+describe("ensureAirlineData", () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("serves the in-process copy without a network request", async () => {
+    let requestCount = 0;
+    const stub: typeof global.fetch = () => {
+      requestCount += 1;
+      return Promise.resolve(new Response("unexpected", { status: 500 }));
+    };
+    global.fetch = stub;
+    seedAirlineDataCache(makeTestData());
+
+    await runPromise(
+      ensureAirlineData(runSync(makeSemaphore(1))).pipe(
+        provide(FetchHttpClient.layer)
+      )
+    );
+
+    expect(requestCount).toBe(0);
+    expect(loadAirlineData()).toEqual(makeTestData());
   });
 });
 describe("airlineScorer", () => {

@@ -27,7 +27,7 @@ export interface SearchRequestOptions {
   readonly lane: SearchLaneConfig;
   readonly maxOutputTokens?: number;
   readonly temperature?: number;
-  readonly reasoningEffort?: ReasoningEffort;
+  readonly reasoningEffort: ReasoningEffort;
   readonly sort?: ProviderSort;
   readonly providerOrder?: readonly string[];
   readonly providerOnly?: readonly string[];
@@ -73,7 +73,9 @@ function buildServerTools(
   const searchParameters = toSearchToolParams(lane);
   const searchTool: WebSearchServerToolOpenRouter = {
     type: "openrouter:web_search",
-    ...(searchParameters !== undefined && { parameters: searchParameters }),
+    ...definedValues({
+      parameters: searchParameters,
+    }),
   };
   if (lane.webFetch === undefined) {
     return [searchTool];
@@ -84,7 +86,9 @@ function buildServerTools(
   );
   const fetchTool: WebFetchServerTool = {
     type: "openrouter:web_fetch",
-    ...(fetchParameters !== undefined && { parameters: fetchParameters }),
+    ...definedValues({
+      parameters: fetchParameters,
+    }),
   };
   return [searchTool, fetchTool];
 }
@@ -121,9 +125,7 @@ export function buildSearchRequestBody(
     ...definedValues({
       maxOutputTokens: opts.maxOutputTokens,
       temperature: opts.temperature,
-      ...(opts.reasoningEffort !== undefined && {
-        reasoning: { effort: opts.reasoningEffort },
-      }),
+      reasoning: { effort: opts.reasoningEffort },
       provider:
         opts.sort !== undefined ||
         opts.providerOrder !== undefined ||
@@ -159,9 +161,9 @@ export function buildSearchRequestBody(
   return {
     ...base,
     tools: [...buildServerTools(lane)],
-    ...(lane.maxAgentTurns !== undefined && {
+    ...definedValues({
       maxToolCalls: lane.maxAgentTurns,
+      plugins: autoRouterPlugin !== undefined ? [autoRouterPlugin] : undefined,
     }),
-    ...(autoRouterPlugin !== undefined && { plugins: [autoRouterPlugin] }),
   };
 }

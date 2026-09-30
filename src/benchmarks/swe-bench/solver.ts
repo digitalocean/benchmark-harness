@@ -94,6 +94,7 @@ export function makeSweBenchSolver(
       const baseCliOpts: AgentCliOpts = opts.agentCli ?? {
         model: opts.model,
         apiKey: opts.apiKey,
+        agentReasoningEffort: opts.inference?.reasoningEffort ?? "high",
         ...(opts.endpointId !== undefined && { endpointId: opts.endpointId }),
         ...(opts.sessionId !== undefined && { sessionId: opts.sessionId }),
       };

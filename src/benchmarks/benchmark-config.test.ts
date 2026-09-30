@@ -4,8 +4,8 @@ import { assertLeft, assertRight } from "../internal/testing";
 import { parseSchema } from "../internal/zod";
 import {
   BenchmarkRunConfigSchema,
-  HostBenchmarkRunConfigSchema,
-  isHostBenchmarkConfig,
+  InjectedBenchmarkRunConfigSchema,
+  isInjectedBenchmarkConfig,
   isModelBenchmarkConfig,
   isSearchBenchmarkConfig,
   NativeBenchmarkRunConfigSchema,
@@ -16,6 +16,7 @@ describe("benchmark config", () => {
     const result = parseSchema(NativeBenchmarkRunConfigSchema, {
       benchmarkId: "search_hle",
       model: "openai/gpt-5.4",
+      reasoningEffort: "high",
     });
 
     assertRight(result);
@@ -28,7 +29,7 @@ describe("benchmark config", () => {
     expect(isModelBenchmarkConfig(result.right)).toBe(true);
   });
 
-  it("does not let malformed native configs fall through to the host variant", () => {
+  it("does not let malformed native configs fall through to the injected variant", () => {
     const result = parseSchema(BenchmarkRunConfigSchema, {
       benchmarkId: "gpqa_diamond",
       model: 42,
@@ -41,11 +42,13 @@ describe("benchmark config", () => {
     const gpqa = parseSchema(BenchmarkRunConfigSchema, {
       benchmarkId: "gpqa_diamond",
       model: "provider/model",
+      reasoningEffort: "high",
       temperature: 0.7,
     });
     const tau = parseSchema(BenchmarkRunConfigSchema, {
       benchmarkId: "tau_bench_verified_airline",
       model: "provider/model",
+      reasoningEffort: "high",
       temperature: 0.2,
     });
 
@@ -55,10 +58,20 @@ describe("benchmark config", () => {
     expect(tau.right).toMatchObject({ temperature: 0.2 });
   });
 
-  it("parses host configs with opaque options", () => {
+  it("requires reasoningEffort in model benchmark configs", () => {
     const result = parseSchema(BenchmarkRunConfigSchema, {
-      benchmarkId: "host_benchmark",
-      model: "host/model",
+      benchmarkId: "gpqa_diamond",
+      model: "openai/gpt-5",
+    });
+
+    assertLeft(result);
+  });
+
+  it("parses injected benchmark configs with opaque options", () => {
+    const result = parseSchema(BenchmarkRunConfigSchema, {
+      benchmarkId: "injected_benchmark",
+      model: "injected/model",
+      reasoningEffort: "high",
       options: {
         subsets: ["all"],
         customFlag: true,
@@ -67,32 +80,35 @@ describe("benchmark config", () => {
 
     assertRight(result);
     expect(result.right).toEqual({
-      benchmarkId: "host_benchmark",
-      model: "host/model",
+      benchmarkId: "injected_benchmark",
+      model: "injected/model",
+      reasoningEffort: "high",
       options: {
         subsets: ["all"],
         customFlag: true,
       },
     });
-    expect(isHostBenchmarkConfig(result.right)).toBe(true);
+    expect(isInjectedBenchmarkConfig(result.right)).toBe(true);
     expect(isModelBenchmarkConfig(result.right)).toBe(true);
     expect(isSearchBenchmarkConfig(result.right)).toBe(false);
   });
 
-  it("defaults host options to an empty object", () => {
-    const result = parseSchema(HostBenchmarkRunConfigSchema, {
-      benchmarkId: "host_benchmark",
-      model: "host/model",
+  it("defaults injected benchmark options to an empty object", () => {
+    const result = parseSchema(InjectedBenchmarkRunConfigSchema, {
+      benchmarkId: "injected_benchmark",
+      model: "injected/model",
+      reasoningEffort: "high",
     });
 
     assertRight(result);
     expect(result.right.options).toEqual({});
   });
 
-  it("rejects a host config that reuses a native benchmark id", () => {
-    const result = parseSchema(HostBenchmarkRunConfigSchema, {
+  it("rejects an injected config that reuses a native benchmark id", () => {
+    const result = parseSchema(InjectedBenchmarkRunConfigSchema, {
       benchmarkId: "gpqa_diamond",
-      model: "host/model",
+      model: "injected/model",
+      reasoningEffort: "high",
       options: { subsets: ["all"] },
     });
 

@@ -14,7 +14,7 @@ import type {
   InferenceOverride,
 } from "./benchmark-config";
 import { GPQA_META } from "./benchmark-meta";
-import { defineChatBenchmark } from "./define-chat-benchmark";
+import { defineSingleTurnBenchmark } from "./define-single-turn-benchmark";
 import { mcqScorer } from "./scorers/mcq/scorer";
 import { seededPermutation } from "./scorers/mcq/shuffle";
 import type { Benchmark } from "./types";
@@ -99,8 +99,11 @@ export function gpqaSolver(
 ): SolverService {
   const config: GenerateConfig = {
     temperature: GPQA_TEMPERATURE,
+    reasoningEffort: opts?.inference?.reasoningEffort ?? "high",
     ...definedValues(opts?.inference ?? {}),
-    ...(opts?.endpointId !== undefined && { endpointId: opts.endpointId }),
+    ...definedValues({
+      endpointId: opts?.endpointId,
+    }),
   };
   return chain(
     systemMessage(SIMPLE_EVALS_SYSTEM_MESSAGE),
@@ -115,11 +118,13 @@ export function makeGpqaDatasetLayer(
 ): Layer<Dataset> {
   return makeHfDatasetLayer({
     ...GPQA_DATASET,
-    ...(retryConfig !== undefined && { retry: retryConfig }),
+    ...definedValues({
+      retry: retryConfig,
+    }),
   });
 }
 
-export const GPQA_BENCHMARK: Benchmark = defineChatBenchmark({
+export const GPQA_BENCHMARK: Benchmark = defineSingleTurnBenchmark({
   id: "gpqa_diamond",
   temperature: GPQA_TEMPERATURE,
   defaultEpochs: GPQA_META.defaultEpochs,
@@ -128,22 +133,25 @@ export const GPQA_BENCHMARK: Benchmark = defineChatBenchmark({
   makeDatasetLayer: makeGpqaDatasetLayer,
   scorer: gpqaScorer,
   makeSolver: (model, config) =>
-    gpqaSolver(model, {
-      ...(config.endpointId !== undefined && { endpointId: config.endpointId }),
-      inference: {
-        temperature: config.temperature,
-        maxTokens: config.maxTokens,
-        reasoningEffort: config.reasoningEffort,
-        timeoutMs: config.timeoutMs,
-        completionTimeoutMs: config.completionTimeoutMs,
-        sort: config.sort,
-        providerOnly: config.providerOnly,
-        providerIgnore: config.providerIgnore,
-        allowFallbacks: config.allowFallbacks,
-        cloudflareVersion: config.cloudflareVersion,
-        costTier: config.costTier,
-        costQualityTradeoff: config.costQualityTradeoff,
-        pinModel: config.pinModel,
-      },
-    }),
+    gpqaSolver(
+      model,
+      definedValues({
+        endpointId: config.endpointId,
+        inference: {
+          temperature: config.temperature,
+          maxTokens: config.maxTokens,
+          reasoningEffort: config.reasoningEffort,
+          timeoutMs: config.timeoutMs,
+          completionTimeoutMs: config.completionTimeoutMs,
+          sort: config.sort,
+          providerOnly: config.providerOnly,
+          providerIgnore: config.providerIgnore,
+          allowFallbacks: config.allowFallbacks,
+          cloudflareVersion: config.cloudflareVersion,
+          costTier: config.costTier,
+          costQualityTradeoff: config.costQualityTradeoff,
+          pinModel: config.pinModel,
+        },
+      })
+    ),
 });

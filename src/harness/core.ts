@@ -3,10 +3,11 @@ import type { ChatToolCall } from "@openrouter/sdk/models/chattoolcall";
 import { TaggedError } from "effect/Data";
 
 import type { ValueOf } from "../internal/guards";
+import { definedValues } from "../internal/guards";
 import { z } from "../internal/zod";
 import type { ModelErrorIdentifiers } from "../providers/request-identifiers";
-import type { ImageDetail } from "./constants";
-import { IMAGE_DETAIL_VALUES } from "./constants";
+import type { ImageDetail, VideoProcessingMode } from "./constants";
+import { IMAGE_DETAIL_VALUES, VIDEO_PROCESSING_MODES } from "./constants";
 import { ReasoningDetailsSchema } from "./reasoning-details";
 
 export const MessageRole = {
@@ -59,6 +60,7 @@ export const VideoContentPartSchema = z.object({
   type: z.literal("video_url"),
   videoUrl: z.object({
     url: z.string(),
+    processing: z.enum(VIDEO_PROCESSING_MODES).optional(),
   }),
 });
 
@@ -68,7 +70,7 @@ export const ContentPartSchema = z.discriminatedUnion("type", [
   VideoContentPartSchema,
 ]);
 
-export const ChatMessageSchema = z
+export const ModelMessageSchema = z
   .object({
     role: z.enum(MESSAGE_ROLE_VALUES),
     content: z.string(),
@@ -77,6 +79,10 @@ export const ChatMessageSchema = z
     toolCallId: z.string().optional(),
     reasoning: z.string().optional(),
     reasoningDetails: ReasoningDetailsSchema.optional(),
+    responseItems: z
+      .array(z.record(z.string(), z.unknown()))
+      .readonly()
+      .optional(),
     citations: z.array(CitationSchema).readonly().optional(),
     model: z.string().optional(),
   })
@@ -106,12 +112,13 @@ export interface VideoContentPart {
   readonly type: "video_url";
   readonly videoUrl: {
     readonly url: string;
+    readonly processing?: VideoProcessingMode;
   };
 }
 
 export type ContentPart = TextContentPart | ImageContentPart | VideoContentPart;
 
-export type ChatMessage = z.infer<typeof ChatMessageSchema>;
+export type ModelMessage = z.infer<typeof ModelMessageSchema>;
 
 export interface Sample {
   readonly id: string;
@@ -148,7 +155,7 @@ export type ResponseItem = Readonly<Record<string, unknown>>;
 
 export interface ModelOutput {
   readonly completion: string;
-  readonly message: ChatMessage;
+  readonly message: ModelMessage;
   readonly usage?: ModelUsage;
   readonly generationTimeMs?: number;
   readonly rawResponse?: Readonly<Record<string, unknown>>;
@@ -156,7 +163,7 @@ export interface ModelOutput {
 
 export interface TaskState {
   readonly sample: Sample;
-  readonly messages: readonly ChatMessage[];
+  readonly messages: readonly ModelMessage[];
   readonly responseItems?: readonly ResponseItem[];
   readonly requestBody?: Readonly<Record<string, unknown>>;
   readonly output?: ModelOutput;
@@ -165,21 +172,19 @@ export interface TaskState {
 }
 
 export function initialTaskState(sample: Sample, epoch?: number): TaskState {
-  return {
+  return definedValues({
     sample,
     messages: [
-      {
+      definedValues({
         role: MessageRole.User,
         content: sample.input,
-        ...(sample.contentParts !== undefined && {
-          contentParts: sample.contentParts,
-        }),
-      },
+        contentParts: sample.contentParts,
+      }),
     ],
     output: undefined,
     completed: false,
-    ...(epoch !== undefined && { epoch }),
-  };
+    epoch,
+  });
 }
 
 export const ScoreValue = {
@@ -228,6 +233,7 @@ export class ModelError extends TaggedError("ModelError")<
     readonly status?: number;
     readonly message: string;
     readonly retryAfterMs?: number;
+    readonly providerName?: string;
   } & ModelErrorIdentifiers
 > {}
 
@@ -240,10 +246,17 @@ export function isRetryableModelError(error: ModelError): boolean {
 }
 
 const SYSTEMIC_STATUS_CODES = new Set([401, 403, 404]);
+const PER_REQUEST_PROVIDER_STATUS_CODES = new Set([403, 404]);
 
 export function isSystemicModelError(error: ModelError): boolean {
   if (error.status === undefined) {
     return true;
+  }
+  if (
+    error.providerName !== undefined &&
+    PER_REQUEST_PROVIDER_STATUS_CODES.has(error.status)
+  ) {
+    return false;
   }
   return SYSTEMIC_STATUS_CODES.has(error.status);
 }

@@ -2,6 +2,7 @@ import type { Layer } from "effect/Layer";
 
 import type { HfDatasetConfig } from "../../datasets/huggingface";
 import { makeHfDatasetLayer } from "../../datasets/huggingface";
+import type { VideoProcessingMode } from "../../harness/constants";
 import type { ContentPart, Sample } from "../../harness/core";
 import type { Dataset as DatasetTag } from "../../harness/dataset";
 import type { SampleScore } from "../../harness/metric";
@@ -17,11 +18,16 @@ import type {
   VgiBenchmarkConfig,
 } from "../benchmark-config";
 import { VGI_BENCH_META } from "../benchmark-meta";
-import { defineChatBenchmark } from "../define-chat-benchmark";
+import { defineSingleTurnBenchmark } from "../define-single-turn-benchmark";
 import { mcqScorer } from "../scorers/mcq/scorer";
 import type { Benchmark } from "../types";
 import type { VgiBenchMediaManifest } from "./media-manifest";
 import { VGI_BENCH_MEDIA_MANIFEST } from "./media-manifest";
+import {
+  keepYoutubeSamples,
+  VGI_BENCH_VIDEO_SOURCE_YOUTUBE,
+  youtubeVideoUrl,
+} from "./youtube-video";
 
 export const VGI_BENCH_DATASET_PATH = "Seldon-Technologies/VGIBench";
 
@@ -98,6 +104,8 @@ export function downscaledVideoUrl(url: string): string {
 export interface VgiBenchRecordToSampleOptions {
   readonly downscaledVideos?: boolean;
   readonly mediaManifest?: VgiBenchMediaManifest;
+  readonly videoProcessing?: VideoProcessingMode;
+  readonly youtubeVideos?: boolean;
 }
 
 export function vgiBenchRecordToSample(
@@ -109,7 +117,11 @@ export function vgiBenchRecordToSample(
   const videoId = asString(record["video_id"], "video_id");
   let videoUrl = asString(record["video_url"], "video_url");
   const manifest = opts?.mediaManifest;
-  if (manifest !== undefined) {
+  const youtubeUrl =
+    opts?.youtubeVideos === true ? youtubeVideoUrl(videoId) : undefined;
+  if (youtubeUrl !== undefined) {
+    videoUrl = youtubeUrl;
+  } else if (manifest !== undefined) {
     const mirroredUrl = manifest.urlByVideoId.get(videoId);
     if (mirroredUrl === undefined) {
       throw new TypeError(
@@ -131,7 +143,13 @@ export function vgiBenchRecordToSample(
   }
   const prompt = buildVgiBenchPrompt(question, answers);
   const contentParts: ContentPart[] = [
-    { type: "video_url", videoUrl: { url: videoUrl } },
+    {
+      type: "video_url",
+      videoUrl: definedValues({
+        url: videoUrl,
+        processing: opts?.videoProcessing,
+      }),
+    },
     { type: "text", text: prompt },
   ];
   const family = questionType.includes("/")
@@ -142,23 +160,24 @@ export function vgiBenchRecordToSample(
     input: prompt,
     target: { text: LETTERS[correctAnswer]! },
     contentParts,
-    metadata: {
+    metadata: definedValues({
       question_id: questionId,
       video_id: videoId,
       question_type: questionType,
       family,
-      ...(manifest !== undefined && {
-        media_manifest_hash: manifest.manifestHash,
-      }),
-      ...(manifest === undefined &&
-        opts?.downscaledVideos === true && {
-          downscaled_videos: true,
-        }),
-      ...(manifest !== undefined &&
-        opts?.downscaledVideos === true && {
-          downscaled_videos_requested: true,
-        }),
-    },
+      media_manifest_hash: manifest?.manifestHash,
+      video_processing: opts?.videoProcessing,
+      video_source:
+        youtubeUrl !== undefined ? VGI_BENCH_VIDEO_SOURCE_YOUTUBE : undefined,
+      downscaled_videos:
+        manifest === undefined && opts?.downscaledVideos === true
+          ? true
+          : undefined,
+      downscaled_videos_requested:
+        manifest !== undefined && opts?.downscaledVideos === true
+          ? true
+          : undefined,
+    }),
   };
 }
 
@@ -180,29 +199,38 @@ function makeVgiBenchDatasetLayer(
     config: VGI_BENCH_CONFIG,
     split: VGI_BENCH_SPLIT,
     recordToSample: (record, idx) =>
-      vgiBenchRecordToSample(record, idx, {
-        ...(mediaManifest !== undefined && { mediaManifest }),
-        ...(opts?.downscaledVideos !== undefined && {
-          downscaledVideos: opts.downscaledVideos,
-        }),
-      }),
+      vgiBenchRecordToSample(
+        record,
+        idx,
+        definedValues({
+          mediaManifest,
+          downscaledVideos: opts?.downscaledVideos,
+          videoProcessing: opts?.videoProcessing,
+          youtubeVideos: opts?.youtubeVideos,
+        })
+      ),
     revision,
-    ...(opts?.retry !== undefined && { retry: opts.retry }),
+    ...definedValues({
+      retry: opts?.retry,
+    }),
   };
-  return makeHfDatasetLayer(config);
+  const layer = makeHfDatasetLayer(config);
+  return opts?.youtubeVideos === true ? keepYoutubeSamples(layer) : layer;
 }
 
 function vgiBenchSolver(
   model: ModelService,
-  opts?: {
+  opts: {
     readonly endpointId?: string;
-    readonly inference?: FixedTemperatureInferenceOverride;
+    readonly inference: FixedTemperatureInferenceOverride;
   }
 ): SolverService {
   const config: GenerateConfig = {
     temperature: VGI_BENCH_TEMPERATURE,
-    ...definedValues(opts?.inference ?? {}),
-    ...(opts?.endpointId !== undefined && { endpointId: opts.endpointId }),
+    ...definedValues(opts.inference),
+    ...definedValues({
+      endpointId: opts.endpointId,
+    }),
   };
   return generate(model, config);
 }
@@ -272,7 +300,7 @@ function vgiBenchRunLevelScores(result: RunResult): readonly {
   ];
 }
 
-const VGI_BENCH_CHAT_BENCHMARK = defineChatBenchmark({
+const VGI_BENCH_SINGLE_TURN_BENCHMARK = defineSingleTurnBenchmark({
   id: VGI_BENCH_META.id,
   temperature: VGI_BENCH_TEMPERATURE,
   defaultEpochs: VGI_BENCH_META.defaultEpochs,
@@ -288,33 +316,38 @@ const VGI_BENCH_CHAT_BENCHMARK = defineChatBenchmark({
         : { revision: VGI_BENCH_DEFAULT_REVISION }
     ),
   makeDatasetLayerForConfig: (config, retryConfig) =>
-    makeVgiBenchDatasetLayer({
-      downscaledVideos: config.downscaledVideos,
-      ...(config.datasetRevision !== undefined
-        ? { revision: config.datasetRevision }
-        : { revision: VGI_BENCH_DEFAULT_REVISION }),
-      ...(retryConfig !== undefined && { retry: retryConfig }),
-    }),
+    makeVgiBenchDatasetLayer(
+      definedValues({
+        downscaledVideos: config.downscaledVideos,
+        videoProcessing: config.videoProcessing,
+        youtubeVideos: config.youtubeVideos,
+        revision: config.datasetRevision ?? VGI_BENCH_DEFAULT_REVISION,
+        retry: retryConfig,
+      })
+    ),
   scorer: mcqScorer,
   makeSolver: (model, config) =>
-    vgiBenchSolver(model, {
-      ...(config.endpointId !== undefined && { endpointId: config.endpointId }),
-      inference: {
-        maxTokens: config.maxTokens,
-        reasoningEffort: config.reasoningEffort,
-        timeoutMs: config.timeoutMs,
-        sort: config.sort,
-        providerOnly: config.providerOnly,
-        providerIgnore: config.providerIgnore,
-        allowFallbacks: config.allowFallbacks,
-        cloudflareVersion: config.cloudflareVersion,
-        costTier: config.costTier,
-        costQualityTradeoff: config.costQualityTradeoff,
-      },
-    }),
+    vgiBenchSolver(
+      model,
+      definedValues({
+        endpointId: config.endpointId,
+        inference: {
+          maxTokens: config.maxTokens,
+          reasoningEffort: config.reasoningEffort,
+          timeoutMs: config.timeoutMs,
+          sort: config.sort,
+          providerOnly: config.providerOnly,
+          providerIgnore: config.providerIgnore,
+          allowFallbacks: config.allowFallbacks,
+          cloudflareVersion: config.cloudflareVersion,
+          costTier: config.costTier,
+          costQualityTradeoff: config.costQualityTradeoff,
+        },
+      })
+    ),
 });
 
 export const VGI_BENCH_BENCHMARK: Benchmark = {
-  ...VGI_BENCH_CHAT_BENCHMARK,
+  ...VGI_BENCH_SINGLE_TURN_BENCHMARK,
   runLevelScores: vgiBenchRunLevelScores,
 };

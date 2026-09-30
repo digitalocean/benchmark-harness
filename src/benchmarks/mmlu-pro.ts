@@ -15,7 +15,7 @@ import type {
   MmluProBenchmarkConfig,
 } from "./benchmark-config";
 import { MMLU_PRO_META } from "./benchmark-meta";
-import { defineChatBenchmark } from "./define-chat-benchmark";
+import { defineSingleTurnBenchmark } from "./define-single-turn-benchmark";
 import { makeMmluProFewShotDatasetLayer } from "./mmlu-pro-dataset";
 import type { MmluProCotExamplesByCategory } from "./mmlu-pro-prompt";
 import { buildMmluProPrompt } from "./mmlu-pro-prompt";
@@ -87,15 +87,17 @@ export function makeMmluProDatasetLayer(
 
 export function mmluProSolver(
   model: ModelService,
-  opts?: {
+  opts: {
     readonly endpointId?: string;
-    readonly inference?: InferenceOverride;
+    readonly inference: InferenceOverride;
   }
 ): SolverService {
   const config: GenerateConfig = {
     temperature: MMLU_PRO_TEMPERATURE,
-    ...definedValues(opts?.inference ?? {}),
-    ...(opts?.endpointId !== undefined && { endpointId: opts.endpointId }),
+    ...definedValues(opts.inference),
+    ...definedValues({
+      endpointId: opts.endpointId,
+    }),
   };
   return generate(model, config);
 }
@@ -148,7 +150,7 @@ function mmluProRunLevelScores(result: RunResult): readonly {
   ];
 }
 
-const MMLU_PRO_CHAT_BENCHMARK = defineChatBenchmark({
+const MMLU_PRO_SINGLE_TURN_BENCHMARK = defineSingleTurnBenchmark({
   id: "mmlu_pro",
   temperature: MMLU_PRO_TEMPERATURE,
   defaultEpochs: MMLU_PRO_META.defaultEpochs,
@@ -157,25 +159,28 @@ const MMLU_PRO_CHAT_BENCHMARK = defineChatBenchmark({
   makeDatasetLayer: makeMmluProDatasetLayer,
   scorer: mmluProScorer,
   makeSolver: (model, config) =>
-    mmluProSolver(model, {
-      ...(config.endpointId !== undefined && { endpointId: config.endpointId }),
-      inference: {
-        temperature: config.temperature,
-        maxTokens: config.maxTokens,
-        reasoningEffort: config.reasoningEffort,
-        timeoutMs: config.timeoutMs,
-        sort: config.sort,
-        providerOnly: config.providerOnly,
-        providerIgnore: config.providerIgnore,
-        allowFallbacks: config.allowFallbacks,
-        cloudflareVersion: config.cloudflareVersion,
-        costTier: config.costTier,
-        costQualityTradeoff: config.costQualityTradeoff,
-      },
-    }),
+    mmluProSolver(
+      model,
+      definedValues({
+        endpointId: config.endpointId,
+        inference: {
+          temperature: config.temperature,
+          maxTokens: config.maxTokens,
+          reasoningEffort: config.reasoningEffort,
+          timeoutMs: config.timeoutMs,
+          sort: config.sort,
+          providerOnly: config.providerOnly,
+          providerIgnore: config.providerIgnore,
+          allowFallbacks: config.allowFallbacks,
+          cloudflareVersion: config.cloudflareVersion,
+          costTier: config.costTier,
+          costQualityTradeoff: config.costQualityTradeoff,
+        },
+      })
+    ),
 });
 
 export const MMLU_PRO_BENCHMARK: Benchmark = {
-  ...MMLU_PRO_CHAT_BENCHMARK,
+  ...MMLU_PRO_SINGLE_TURN_BENCHMARK,
   runLevelScores: mmluProRunLevelScores,
 };

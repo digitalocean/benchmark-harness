@@ -26,7 +26,7 @@ import type { ModelUsage } from "../harness/core";
 import { ModelError } from "../harness/core";
 import type { GenerateConfig } from "../harness/model";
 import { stripVariantSuffix } from "../harness/model";
-import { isRecord } from "../internal/guards";
+import { definedValues, isRecord } from "../internal/guards";
 import {
   logModelRequestCompleted,
   logModelRequestProgress,
@@ -68,9 +68,11 @@ export interface ResponsesFunctionTool {
   readonly name: string;
   readonly description?: string;
   readonly parameters: Record<string, unknown>;
+  readonly strict?: boolean | null;
 }
 
 export interface ResponsesGenerateConfig extends Omit<GenerateConfig, "tools"> {
+  readonly model?: string;
   readonly instructions?: string;
   readonly tools?: readonly ResponsesFunctionTool[];
 }
@@ -93,6 +95,7 @@ export interface ResponsesModelConfig {
   readonly baseUrl?: string;
   readonly sessionId?: string;
   readonly retry?: RetryConfig;
+  readonly traceHeaders?: Readonly<Record<string, string>>;
 }
 
 export interface ResponsesModelService {
@@ -113,11 +116,14 @@ export function makeResponsesModelLayer(
   config: ResponsesModelConfig
 ): Layer<ResponsesModel> {
   const baseUrl = config.baseUrl ?? "https://openrouter.ai/api/v1";
-  const responsesLayer = makeResponsesLayer({
-    apiKey: config.apiKey,
-    baseUrl,
-    ...(config.sessionId !== undefined && { sessionId: config.sessionId }),
-  });
+  const responsesLayer = makeResponsesLayer(
+    definedValues({
+      apiKey: config.apiKey,
+      baseUrl,
+      sessionId: config.sessionId,
+      traceHeaders: config.traceHeaders,
+    })
+  );
   return effect(ResponsesModel)(
     gen(function* () {
       const responses = yield* Responses;
@@ -157,51 +163,48 @@ export function generate(
   const { genConfig } = opts;
   const sendSort =
     genConfig.sort !== undefined && genConfig.endpointId === undefined;
-  const providerPreferences = {
-    ...(sendSort && { sort: genConfig.sort }),
-    ...(genConfig.providerOnly !== undefined && {
-      only: [...genConfig.providerOnly],
-    }),
-    ...(genConfig.providerIgnore !== undefined && {
-      ignore: [...genConfig.providerIgnore],
-    }),
-    ...(genConfig.allowFallbacks !== undefined && {
-      allowFallbacks: genConfig.allowFallbacks,
-    }),
-  };
+  const providerPreferences = definedValues({
+    sort: sendSort ? genConfig.sort : undefined,
+    only:
+      genConfig.providerOnly !== undefined
+        ? [...genConfig.providerOnly]
+        : undefined,
+    ignore:
+      genConfig.providerIgnore !== undefined
+        ? [...genConfig.providerIgnore]
+        : undefined,
+    allowFallbacks: genConfig.allowFallbacks,
+  });
   const sendProvider = Object.keys(providerPreferences).length > 0;
-  const baseModel = stripVariantSuffix(opts.model);
+  const requestModel = genConfig.model ?? opts.model;
+  const baseModel = stripVariantSuffix(requestModel);
   const autoRouterPlugin = buildAutoRouterPlugin(baseModel, genConfig);
   const body = {
-    model: opts.model,
+    model: requestModel,
     input: toSdkInput(opts.input),
     store: false,
     include: ["reasoning.encrypted_content"],
-    ...(genConfig.instructions !== undefined && {
+    ...definedValues({
       instructions: genConfig.instructions,
-    }),
-    ...(genConfig.tools !== undefined &&
-      genConfig.tools.length > 0 && { tools: [...genConfig.tools] }),
-    ...(genConfig.reasoningEffort !== undefined && {
-      reasoning: { effort: genConfig.reasoningEffort },
-    }),
-    ...(genConfig.temperature !== undefined && {
       temperature: genConfig.temperature,
-    }),
-    ...(genConfig.maxTokens !== undefined && {
       maxOutputTokens: genConfig.maxTokens,
+      tools:
+        genConfig.tools !== undefined && genConfig.tools.length > 0
+          ? [...genConfig.tools]
+          : undefined,
     }),
-    ...(sendProvider && { provider: providerPreferences }),
-    ...(autoRouterPlugin !== undefined && { plugins: [autoRouterPlugin] }),
+    reasoning: { effort: genConfig.reasoningEffort },
+    ...definedValues({
+      provider: sendProvider ? providerPreferences : undefined,
+    }),
+    ...definedValues({
+      plugins: autoRouterPlugin !== undefined ? [autoRouterPlugin] : undefined,
+    }),
   } satisfies ResponsesRequest;
-  const extraHeaders = {
-    ...(genConfig.endpointId !== undefined && {
-      "X-OR-Endpoint-Id": genConfig.endpointId,
-    }),
-    ...(genConfig.cloudflareVersion !== undefined && {
-      "Cloudflare-Workers-Version-Overrides": genConfig.cloudflareVersion,
-    }),
-  };
+  const extraHeaders = definedValues({
+    "X-OR-Endpoint-Id": genConfig.endpointId,
+    "Cloudflare-Workers-Version-Overrides": genConfig.cloudflareVersion,
+  });
   const extraBody = genConfig.extraBody;
   let identifiers: ModelErrorIdentifiers = {};
   let requestAttempt = 1;
@@ -221,7 +224,7 @@ export function generate(
       requestId,
       sessionId: opts.sessionId,
       attempt: requestAttempt,
-      model: opts.model,
+      model: requestModel,
       url,
       startedAt: attemptStartedAtIso,
       startedAtMs: attemptStartedAt,
@@ -230,7 +233,7 @@ export function generate(
       requestId,
       sessionId: opts.sessionId,
       attempt: requestAttempt,
-      model: opts.model,
+      model: requestModel,
       url,
       startedAt: attemptStartedAtIso,
       request: {
@@ -242,8 +245,16 @@ export function generate(
     });
     const result = yield* responses
       .send(body, {
-        ...(Object.keys(extraHeaders).length > 0 && { extraHeaders }),
-        ...(extraBody !== undefined && { extraBody }),
+        ...definedValues({
+          timeoutMs: genConfig.timeoutMs,
+        }),
+        ...definedValues({
+          extraHeaders:
+            Object.keys(extraHeaders).length > 0 ? extraHeaders : undefined,
+        }),
+        ...definedValues({
+          extraBody,
+        }),
         onResponseIdentifiers: (responseIdentifiers) => {
           identifiers = { ...identifiers, ...responseIdentifiers };
         },
@@ -270,7 +281,7 @@ export function generate(
       requestId,
       sessionId: opts.sessionId,
       attempt: requestAttempt,
-      model: opts.model,
+      model: requestModel,
       url,
       startedAt: attemptStartedAtIso,
       finishedAt: new Date().toISOString(),
@@ -287,29 +298,10 @@ export function generate(
     });
     return turn;
   });
-  const timeoutMs = genConfig.timeoutMs;
-  const connectionTimedAttempt =
-    timeoutMs !== undefined && timeoutMs > 0
-      ? requestAttemptEffect.pipe(
-          timeout(millis(timeoutMs)),
-          catchTag("TimeoutException", () =>
-            fail(
-              new ModelError({
-                status: 408,
-                message: appendModelErrorIdentifiers(
-                  `Request timed out after ${timeoutMs}ms`,
-                  identifiers
-                ),
-                ...identifiers,
-              })
-            )
-          )
-        )
-      : requestAttemptEffect;
   const completionTimeoutMs = genConfig.completionTimeoutMs;
   const completionTimedAttempt =
     completionTimeoutMs !== undefined && completionTimeoutMs > 0
-      ? connectionTimedAttempt.pipe(
+      ? requestAttemptEffect.pipe(
           timeout(millis(completionTimeoutMs)),
           catchTag("TimeoutException", () =>
             fail(
@@ -324,7 +316,7 @@ export function generate(
             )
           )
         )
-      : connectionTimedAttempt;
+      : requestAttemptEffect;
   const loggedAttempt = completionTimedAttempt.pipe(
     tapError((error) =>
       sync(() => {
@@ -332,7 +324,7 @@ export function generate(
           requestId,
           sessionId: opts.sessionId,
           attempt: requestAttempt,
-          model: opts.model,
+          model: requestModel,
           url,
           startedAt: attemptStartedAtIso,
           finishedAt: new Date().toISOString(),
@@ -474,7 +466,7 @@ function responsesFailureStage(
 
 const RAW_PAYLOAD_KEYS = new Set(["arguments", "output"]);
 
-function toSdkInput(input: readonly ResponsesInputItem[]): InputsUnion {
+export function toSdkInput(input: readonly ResponsesInputItem[]): InputsUnion {
   return input.map(toSdkValue) as InputsUnion;
 }
 
@@ -541,11 +533,11 @@ function toResponsesTurn(
       },
     ];
   });
-  return {
+  return definedValues({
     outputItems,
     functionCalls,
     text: extractMessageText(outputItems),
-    ...(usage !== undefined && { usage }),
+    usage,
     generationTimeMs,
-  };
+  });
 }

@@ -19,6 +19,7 @@ import {
   zipWithIndex as streamZipWithIndex,
 } from "effect/Stream";
 
+import { definedValues } from "../internal/guards";
 import { resetGenerationIds } from "../runtime/generation-ids";
 import type { ReplayedUsage } from "../runtime/generation-resolver";
 import { resolveCollectedGenerations } from "../runtime/generation-resolver";
@@ -219,24 +220,18 @@ function evaluateOne(
     const state = yield* solver(initialTaskState(sample, epoch));
     const score = yield* scorer(state, sample.target);
     return {
-      sampleScore: {
+      sampleScore: definedValues({
         sampleId: sample.id,
         epoch,
         score,
         messages: state.messages,
-        ...(state.responseItems !== undefined && {
-          responseItems: state.responseItems,
-        }),
-        ...(state.requestBody !== undefined && {
-          requestBody: state.requestBody,
-        }),
-        ...(state.output?.generationTimeMs !== undefined && {
-          generationTimeMs: state.output.generationTimeMs,
-        }),
-        ...(state.sample.metadata && { metadata: state.sample.metadata }),
+        responseItems: state.responseItems,
+        requestBody: state.requestBody,
+        generationTimeMs: state.output?.generationTimeMs,
+        metadata: state.sample.metadata,
         input: sample.input,
         target: sample.target.text,
-      },
+      }),
       usage: state.output?.usage,
       generationTimeMs: state.output?.generationTimeMs,
     } as const;
@@ -326,7 +321,9 @@ function errorOutcome(opts: ErrorOutcomeOpts): EvalOutcome {
       epoch,
       score,
       messages: [],
-      ...(sample.metadata && { metadata: sample.metadata }),
+      ...definedValues({
+        metadata: sample.metadata,
+      }),
       input: sample.input,
       target: sample.target.text,
     },

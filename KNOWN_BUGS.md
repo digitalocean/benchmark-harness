@@ -26,13 +26,17 @@ Expected behavior: a run with no completed evaluations, or an incomplete result 
 
 ## BH-003: `completionTimeoutMs` is ignored by the Responses provider
 
-**Status:** Open
+**Status:** Fixed locally on 2026-09-28; deployment pending
 
 **Affected area:** `src/providers/responses-model.ts`
 
-Responses-based benchmarks can configure `completionTimeoutMs`, and the value appears in the effective solver configuration. The Responses provider only applies `timeoutMs`; it does not apply `completionTimeoutMs`. Consequently, the configured completion timeout does not bound a Responses request.
+Responses-based benchmarks can configure `completionTimeoutMs`, and the value appears in the effective solver configuration. Previously, the Responses provider only applied `timeoutMs`, so the configured completion timeout did not bound a Responses request.
 
 Expected behavior: define and enforce the same timeout semantics for Responses requests as for the other model provider, with a regression test for an unfinished stream.
+
+The Responses provider now applies `timeoutMs` to the initial SDK request and
+enforces `completionTimeoutMs` across the complete streamed attempt. Deep SWE,
+SWE-bench Verified, and all SWE Atlas tracks forward both settings.
 
 ## BH-004: Repository typecheck fails in TAU Airline tests
 

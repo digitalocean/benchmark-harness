@@ -6,7 +6,7 @@ import { parquetWriteBuffer } from "hyparquet-writer";
 import type { BenchmarkRunConfig } from "../benchmarks/benchmark-config";
 import type { BenchmarkPrimaryScore } from "../benchmarks/types";
 import type {
-  ChatMessage,
+  ModelMessage,
   ContentPart,
   ToolCall,
   UsageTotals,
@@ -16,6 +16,7 @@ import type { AggregateMetrics, SampleScore } from "../harness/metric";
 import { aggregateScores } from "../harness/metric";
 import type { RunResult } from "../harness/run";
 import { Either } from "../internal/either";
+import { definedValues } from "../internal/guards";
 import { firstZodIssueMessage, parseSchema, z } from "../internal/zod";
 import type { BenchmarkResultRow } from "./parquet-schema";
 import {
@@ -252,7 +253,7 @@ function cellValue(name: ColumnName, ctx: RowContext, s: SampleScore): unknown {
     }
     case "messages": {
       return s.messages !== undefined && s.messages.length > 0
-        ? JSON.stringify(s.messages.map(chatMessageToPojo))
+        ? JSON.stringify(s.messages.map(messageToPojo))
         : null;
     }
     case "metadata": {
@@ -277,7 +278,7 @@ interface RowContext {
   readonly benchmarkConfigJson: string | null;
 }
 
-function chatMessageToPojo(msg: ChatMessage): Record<string, unknown> {
+function messageToPojo(msg: ModelMessage): Record<string, unknown> {
   const pojo: Record<string, unknown> = {
     role: msg.role,
     content: msg.content,
@@ -310,12 +311,10 @@ function contentPartToPojo(part: ContentPart): Record<string, unknown> {
     case "image_url": {
       return {
         type: "image_url",
-        image_url: {
+        image_url: definedValues({
           url: part.imageUrl.url,
-          ...(part.imageUrl.detail !== undefined && {
-            detail: part.imageUrl.detail,
-          }),
-        },
+          detail: part.imageUrl.detail,
+        }),
       };
     }
     case "text": {
@@ -324,7 +323,10 @@ function contentPartToPojo(part: ContentPart): Record<string, unknown> {
     case "video_url": {
       return {
         type: "video_url",
-        video_url: { url: part.videoUrl.url },
+        video_url: definedValues({
+          url: part.videoUrl.url,
+          processing: part.videoUrl.processing,
+        }),
       };
     }
     default: {
@@ -455,7 +457,9 @@ export function summarizeChunkRows(
     totalCost: first.total_cost,
     generationTimeMs: first.generation_time_ms,
     temperature: first.temperature,
-    ...(primaryScore !== undefined && { primaryScore }),
+    ...definedValues({
+      primaryScore,
+    }),
     epochResults,
   };
 }

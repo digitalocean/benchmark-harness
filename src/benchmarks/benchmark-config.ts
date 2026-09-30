@@ -2,15 +2,16 @@ import {
   COST_TIERS,
   IMAGE_DETAIL_VALUES,
   REASONING_EFFORTS,
+  VIDEO_PROCESSING_MODES,
 } from "../harness/constants";
 import { ProviderSort } from "../internal/enums";
 import type { ValueOf } from "../internal/guards";
 import { z, zDefaultedText, zInt } from "../internal/zod";
 import {
+  AGENT_PACKAGE_PATTERN,
   DEFAULT_HARBOR_AGENT,
   DEFAULT_ORI_CHANNEL,
   DEFAULT_ORI_INSTALL_URL,
-  DEFAULT_ORI_REASONING_EFFORT,
   HARBOR_AGENTS,
   ORI_CHANNELS,
   ORI_REASONING_EFFORTS,
@@ -43,7 +44,7 @@ export type GeminiMediaResolution = ValueOf<typeof GEMINI_MEDIA_RESOLUTIONS>;
 export const InferenceOverrideSchema = z.object({
   temperature: z.number().optional(),
   maxTokens: z.number().optional(),
-  reasoningEffort: z.enum(REASONING_EFFORTS).optional(),
+  reasoningEffort: z.enum(REASONING_EFFORTS),
   costTier: z.enum(COST_TIERS).optional(),
   timeoutMs: z.number().optional(),
   completionTimeoutMs: z.number().positive().optional(),
@@ -99,6 +100,7 @@ export type MmluProBenchmarkConfig = z.infer<
 
 export const TauBenchOptionsSchema = z.object({
   userModel: zDefaultedText(TAU_BENCH_AIRLINE_META.userModel),
+  userReasoningEffort: z.enum(REASONING_EFFORTS).default("medium"),
 });
 
 export const TauBenchAirlineConfigSchema = z.object({
@@ -128,6 +130,7 @@ export type Tau3BenchBankingConfig = z.infer<
 export const MmmuProVisionOptionsSchema = z.object({
   imageDetail: z.enum(IMAGE_DETAIL_VALUES).optional(),
   mediaResolution: z.enum(GEMINI_MEDIA_RESOLUTIONS).optional(),
+  datasetRevision: z.string().optional(),
 });
 
 export const MmmuProVisionBenchmarkConfigSchema = z.object({
@@ -140,17 +143,19 @@ export type MmmuProVisionBenchmarkConfig = z.infer<
   typeof MmmuProVisionBenchmarkConfigSchema
 >;
 
+const AgentPackageSchema = z
+  .string()
+  .regex(AGENT_PACKAGE_PATTERN, "agentPackage contains disallowed characters");
+
 export const TerminalBenchOptionsSchema = z.object({
   maxAgentTimeoutSec: z.number().positive().optional(),
   taskSubset: z.array(z.string()).optional(),
   modalEnv: z.string().default("main"),
   appendSystemPrompt: z.string().optional(),
   agent: z.enum(TERMINAL_BENCH_AGENTS).default(DEFAULT_TERMINAL_BENCH_AGENT),
-  agentPackage: z.string().optional(),
+  agentPackage: AgentPackageSchema.optional(),
   oriInstallUrl: z.string().default(DEFAULT_ORI_INSTALL_URL),
-  agentReasoningEffort: z
-    .enum(ORI_REASONING_EFFORTS)
-    .default(DEFAULT_ORI_REASONING_EFFORT),
+  agentReasoningEffort: z.enum(ORI_REASONING_EFFORTS),
   oriChannel: z.enum(ORI_CHANNELS).default(DEFAULT_ORI_CHANNEL),
   systemPrompt: z.string().optional(),
   allowedTools: z.array(z.string()).optional(),
@@ -192,11 +197,9 @@ const AgenticOptionsSchema = z.object({
   maxAgentTimeoutSec: z.number().positive().optional(),
   modalEnv: z.string().default("main"),
   agent: z.enum(HARBOR_AGENTS).default(DEFAULT_HARBOR_AGENT),
-  agentPackage: z.string().optional(),
+  agentPackage: AgentPackageSchema.optional(),
   oriInstallUrl: z.string().default(DEFAULT_ORI_INSTALL_URL),
-  agentReasoningEffort: z
-    .enum(ORI_REASONING_EFFORTS)
-    .default(DEFAULT_ORI_REASONING_EFFORT),
+  agentReasoningEffort: z.enum(ORI_REASONING_EFFORTS),
   oriChannel: z.enum(ORI_CHANNELS).default(DEFAULT_ORI_CHANNEL),
   systemPrompt: z.string().optional(),
   appendSystemPrompt: z.string().optional(),
@@ -316,6 +319,8 @@ export type WideSearchBenchmarkConfig = z.infer<
 
 export const VgiBenchOptionsSchema = z.object({
   downscaledVideos: z.boolean().default(false),
+  videoProcessing: z.enum(VIDEO_PROCESSING_MODES).optional(),
+  youtubeVideos: z.boolean().default(false),
   datasetRevision: z.string().optional(),
 });
 
@@ -399,34 +404,34 @@ const NATIVE_BENCHMARK_ID_SET: ReadonlySet<string> = new Set(
   })
 );
 
-const HostBenchmarkIdSchema = z
+const InjectedBenchmarkIdSchema = z
   .string()
   .min(1)
   .refine(
     (benchmarkId) => !NATIVE_BENCHMARK_ID_SET.has(benchmarkId),
-    "Host benchmark ids must not reuse native benchmark ids"
+    "Injected benchmark ids must not reuse native benchmark ids"
   );
 
-export const HostBenchmarkRunConfigSchema = z.object({
-  benchmarkId: HostBenchmarkIdSchema,
+export const InjectedBenchmarkRunConfigSchema = z.object({
+  benchmarkId: InjectedBenchmarkIdSchema,
   ...ModelBenchmarkBaseSchema.shape,
   options: z.record(z.string(), z.unknown()).default({}),
 });
 
-export type HostBenchmarkRunConfig = z.infer<
-  typeof HostBenchmarkRunConfigSchema
+export type InjectedBenchmarkRunConfig = z.infer<
+  typeof InjectedBenchmarkRunConfigSchema
 >;
 
 export const BenchmarkRunConfigSchema = z.union([
   NativeBenchmarkRunConfigSchema,
-  HostBenchmarkRunConfigSchema,
+  InjectedBenchmarkRunConfigSchema,
 ]);
 
 export type BenchmarkRunConfig = z.infer<typeof BenchmarkRunConfigSchema>;
 
 export type ModelBenchmarkConfig =
   | NativeModelBenchmarkConfig
-  | HostBenchmarkRunConfig;
+  | InjectedBenchmarkRunConfig;
 
 export function isModelBenchmarkConfig(
   config: BenchmarkRunConfig
@@ -440,9 +445,9 @@ export function isNativeBenchmarkConfig(
   return NATIVE_BENCHMARK_ID_SET.has(config.benchmarkId);
 }
 
-export function isHostBenchmarkConfig(
+export function isInjectedBenchmarkConfig(
   config: BenchmarkRunConfig
-): config is HostBenchmarkRunConfig {
+): config is InjectedBenchmarkRunConfig {
   return !isNativeBenchmarkConfig(config);
 }
 

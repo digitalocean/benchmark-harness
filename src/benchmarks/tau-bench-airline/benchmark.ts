@@ -17,11 +17,20 @@ import { Model } from "../../harness/model";
 import { Scorer } from "../../harness/scorer";
 import { Solver } from "../../harness/solver";
 import { Either } from "../../internal/either";
+import { definedValues } from "../../internal/guards";
 import { parseSchema } from "../../internal/zod";
 import { makeOpenRouterModelLayer } from "../../providers/openrouter-model";
+import {
+  makeResponsesModelLayer,
+  ResponsesModel,
+} from "../../providers/responses-model";
 import type { RetryConfig } from "../../runtime/retry";
 import { TAU_BENCH_AIRLINE_META } from "../benchmark-meta";
 import type { Benchmark, BenchmarkRunInput } from "../types";
+import {
+  TAU_BENCH_AIRLINE_DATASET_ID,
+  TAU_BENCH_AIRLINE_REVISION,
+} from "./environment";
 import { airlineScorer } from "./scorer";
 import { airlineSolver } from "./solver";
 import type { SolverOpts, Tau2Task } from "./types";
@@ -83,7 +92,8 @@ export function airlineRecordToSample(
 }
 
 export const TAU_BENCH_AIRLINE_DATASET = {
-  dataset: "abhinavpola/tau2-bench-verified-airline",
+  dataset: TAU_BENCH_AIRLINE_DATASET_ID,
+  revision: TAU_BENCH_AIRLINE_REVISION,
   config: "tasks",
   split: "test",
   recordToSample: airlineRecordToSample,
@@ -94,7 +104,9 @@ export function makeAirlineDatasetLayer(
 ): Layer<Dataset> {
   return makeHfDatasetLayer({
     ...TAU_BENCH_AIRLINE_DATASET,
-    ...(retryConfig !== undefined && { retry: retryConfig }),
+    ...definedValues({
+      retry: retryConfig,
+    }),
   });
 }
 
@@ -109,25 +121,23 @@ function makeAirlineLayer(
       )
     );
   }
-  const defaultUserModel = resolveAirlineUserModel(
-    benchmarkConfig.userModel,
-    input.baseUrl
-  );
   const userSimulator = input.userSimulator;
   const userSimulatorBaseUrl = userSimulator?.baseUrl ?? input.baseUrl;
-  const solverOpts: SolverOpts = {
-    ...(benchmarkConfig.endpointId !== undefined && {
-      endpointId: benchmarkConfig.endpointId,
-    }),
-    userModelConfig: {
+  const defaultUserModel = resolveAirlineUserModel(
+    benchmarkConfig.userModel,
+    userSimulatorBaseUrl
+  );
+  const userSimulatorModel = userSimulator?.model ?? defaultUserModel;
+  const solverOpts: SolverOpts = definedValues({
+    endpointId: benchmarkConfig.endpointId,
+    userModelConfig: definedValues({
       apiKey: userSimulator?.apiKey ?? input.apiKey,
-      model: userSimulator?.model ?? defaultUserModel,
-      fallbackModel: userSimulator?.model ?? defaultUserModel,
-      ...(userSimulatorBaseUrl !== undefined && {
-        baseUrl: userSimulatorBaseUrl,
-      }),
+      model: userSimulatorModel,
+      fallbackModel: userSimulatorModel,
+      baseUrl: userSimulatorBaseUrl,
       sessionId: input.sessionId,
-    },
+      reasoningEffort: benchmarkConfig.userReasoningEffort,
+    }),
     inference: {
       temperature: benchmarkConfig.temperature,
       maxTokens: benchmarkConfig.maxTokens,
@@ -143,31 +153,52 @@ function makeAirlineLayer(
       costQualityTradeoff: benchmarkConfig.costQualityTradeoff,
       pinModel: benchmarkConfig.pinModel,
     },
-  };
+  });
   const datasetLayer = makeAirlineDatasetLayer(input.datasetRetry);
   const modelLayer =
     input.modelLayer ??
-    makeOpenRouterModelLayer({
-      model: benchmarkConfig.model,
-      apiKey: input.apiKey,
-      ...(input.baseUrl !== undefined && { baseUrl: input.baseUrl }),
-      sessionId: input.sessionId,
-      ...(input.modelRetry !== undefined && { retry: input.modelRetry }),
-    });
+    makeOpenRouterModelLayer(
+      definedValues({
+        model: benchmarkConfig.model,
+        apiKey: input.apiKey,
+        baseUrl: input.baseUrl,
+        sessionId: input.sessionId,
+        retry: input.modelRetry,
+        traceHeaders: input.traceHeaders,
+      })
+    );
+  const userModelLayer =
+    input.responsesModelLayer ??
+    makeResponsesModelLayer(
+      definedValues({
+        model: userSimulatorModel,
+        apiKey: userSimulator?.apiKey ?? input.apiKey,
+        baseUrl: userSimulatorBaseUrl,
+        sessionId: input.sessionId,
+        traceHeaders: input.traceHeaders,
+      })
+    );
   const solverLayer = layerEffect(Solver)(
     gen(function* () {
       const model = yield* Model;
+      const userModel = yield* ResponsesModel;
       const client = yield* HttpClient.HttpClient;
       const dataFetchLock = yield* makeSemaphore(1);
       return Solver.of(
-        airlineSolver({ model, client, dataFetchLock, opts: solverOpts })
+        airlineSolver({
+          model,
+          userModel,
+          client,
+          dataFetchLock,
+          opts: solverOpts,
+        })
       );
     })
   );
   const scorerLayer = layerSucceed(Scorer, Scorer.of(airlineScorer));
   return layerMergeAll(
     datasetLayer,
-    solverLayer.pipe(layerProvide(modelLayer)),
+    solverLayer.pipe(layerProvide(layerMergeAll(modelLayer, userModelLayer))),
     scorerLayer
   );
 }

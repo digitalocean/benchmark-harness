@@ -10,15 +10,12 @@ import {
 } from "effect/Effect";
 
 import { SolverError } from "../../harness/core";
+import { definedValues } from "../../internal/guards";
 import { recordGenerationId } from "../../runtime/generation-ids";
 import type { SandboxSessionInstance } from "../harbor/sandbox";
 import type { OriAgentRun, OriHarnessDef } from "./harness";
 import type { OriChannel, OriReasoningEffort } from "./schema";
-import {
-  DEFAULT_ORI_CHANNEL,
-  DEFAULT_ORI_INSTALL_URL,
-  DEFAULT_ORI_REASONING_EFFORT,
-} from "./schema";
+import { DEFAULT_ORI_CHANNEL, DEFAULT_ORI_INSTALL_URL } from "./schema";
 
 const EXIT_DETAIL_TAIL_CHARS = 500;
 
@@ -94,7 +91,7 @@ export interface AgentCliOpts {
   readonly oriInstallUrl?: string;
   readonly systemPrompt?: string;
   readonly appendSystemPrompt?: string;
-  readonly agentReasoningEffort?: OriReasoningEffort;
+  readonly agentReasoningEffort: OriReasoningEffort;
   readonly oriChannel?: OriChannel;
   readonly allowedTools?: readonly string[];
   readonly disallowedTools?: readonly string[];
@@ -211,7 +208,7 @@ export function runAgentCli(input: {
   const script = harness.buildRunScript({
     instructionPath,
     logPath: harness.remoteLogPath,
-    reasoningEffort: opts.agentReasoningEffort ?? DEFAULT_ORI_REASONING_EFFORT,
+    reasoningEffort: opts.agentReasoningEffort,
     hasSystemPrompt: opts.systemPrompt !== undefined,
     hasAppendSystemPrompt: opts.appendSystemPrompt !== undefined,
     hasAllowedTools: (opts.allowedTools ?? []).length > 0,
@@ -255,16 +252,16 @@ export function runAgentCli(input: {
       generationTimeMs: parsed.generationTimeMs ?? elapsedMs,
       exitCode: run.exitCode,
       rawStream: run.stdout,
-      failureDetail: buildFailureDetail({
-        agentId: harness.id,
-        exitCode: run.exitCode,
-        isError: parsed.isError,
-        apiErrorStatus: parsed.apiErrorStatus,
-        eventStream: run.stdout,
-        ...("execError" in run && run.execError !== undefined
-          ? { execError: run.execError }
-          : {}),
-      }),
+      failureDetail: buildFailureDetail(
+        definedValues({
+          agentId: harness.id,
+          exitCode: run.exitCode,
+          isError: parsed.isError,
+          apiErrorStatus: parsed.apiErrorStatus,
+          eventStream: run.stdout,
+          execError: "execError" in run ? run.execError : undefined,
+        })
+      ),
     };
   });
 }
@@ -307,12 +304,12 @@ export function agentCliMetadata(
   harnessId: string,
   run: AgentCliRunResult
 ): Readonly<Record<string, unknown>> {
-  return {
+  return definedValues({
     agent: harnessId,
     agentExitCode: run.exitCode,
     agentIsError: run.isError,
     generationIds: run.generationIds,
-    ...(run.turns !== undefined && { agentTurns: run.turns }),
+    agentTurns: run.turns,
     agentToolCalls: run.toolCalls,
-  };
+  });
 }

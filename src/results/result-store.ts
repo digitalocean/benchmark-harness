@@ -9,6 +9,7 @@ import type { BenchmarkRunConfig } from "../benchmarks/benchmark-config";
 import { modelFromConfig } from "../benchmarks/benchmark-config";
 import type { BenchmarkMetadata } from "../benchmarks/types";
 import type { RunResult } from "../harness/run";
+import { definedValues } from "../internal/guards";
 import { iLog } from "../internal/log";
 import { runResultToParquet } from "./parquet";
 
@@ -53,21 +54,23 @@ export function makeLocalResultStore(opts: {
       });
       const extraScores = benchmark.runLevelScores?.(result);
       const primaryScore = benchmark.primaryScore?.(result);
-      const parquetBuffer = runResultToParquet({
-        result,
-        meta: {
-          task: benchmarkId,
-          model,
-          epochs,
-          temperature: configuredTemperature(
+      const parquetBuffer = runResultToParquet(
+        definedValues({
+          result,
+          meta: {
+            task: benchmarkId,
+            model,
+            epochs,
+            temperature: configuredTemperature(
+              benchmarkConfig,
+              benchmark.temperature
+            ),
             benchmarkConfig,
-            benchmark.temperature
-          ),
-          benchmarkConfig,
-        },
-        ...(extraScores !== undefined && { extraScores }),
-        ...(primaryScore !== undefined && { primaryScore }),
-      });
+          },
+          extraScores,
+          primaryScore,
+        })
+      );
       const safeModel = model.replaceAll("/", "_");
       const filename = `${benchmarkId}-${safeModel}-${sessionId}.parquet`;
       const filepath = join(opts.dir, filename);

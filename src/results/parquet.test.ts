@@ -4,11 +4,12 @@ import assert from "node:assert";
 import type { AsyncBuffer } from "hyparquet";
 import { parquetMetadata } from "hyparquet";
 
-import type { ChatMessage, ResponseItem } from "../harness/core";
+import type { ModelMessage, ResponseItem } from "../harness/core";
 import { MessageRole, ScoreValue } from "../harness/core";
 import type { SampleScore } from "../harness/metric";
 import { assertRight, assertLeft } from "../internal/testing";
 import { parseSchema } from "../internal/zod";
+import { responsesTurnToModelOutput } from "../providers/messages-to-responses";
 import {
   readResultRows,
   runResultToParquet,
@@ -348,8 +349,8 @@ describe("runResultToParquet", () => {
     expect(rowScoreToNumber("C")).toBe(1);
     expect(rowScoreToNumber("I")).toBe(0);
   });
-  it("serializes message trajectories as a JSON payload", async () => {
-    const messages: readonly ChatMessage[] = [
+  it("serializes message trajectories as a JSON column", async () => {
+    const messages: readonly ModelMessage[] = [
       { role: MessageRole.System, content: "You are a helpful assistant." },
       { role: MessageRole.User, content: "What is 2+2?" },
       { role: MessageRole.Assistant, content: "Answer: B" },
@@ -383,7 +384,7 @@ describe("runResultToParquet", () => {
     ]);
   });
   it("preserves message row alignment around null trajectories", async () => {
-    const message = (answer: string): readonly ChatMessage[] => [
+    const message = (answer: string): readonly ModelMessage[] => [
       { role: MessageRole.Assistant, content: `Answer: ${answer}` },
     ];
     const bufferWithNullTrajectory = runResultToParquet({
@@ -449,7 +450,7 @@ describe("runResultToParquet", () => {
     expect(JSON.parse(answeredA!.messages!)).toEqual(message("A"));
   });
   it("serializes tool calls and tool_call_id in the messages JSON", async () => {
-    const messages: readonly ChatMessage[] = [
+    const messages: readonly ModelMessage[] = [
       {
         role: MessageRole.Assistant,
         content: "",
@@ -495,7 +496,7 @@ describe("runResultToParquet", () => {
     expect(parsed[1]).not.toHaveProperty("tool_calls");
   });
   it("serializes assistant reasoning traces in the messages JSON", async () => {
-    const messages: readonly ChatMessage[] = [
+    const messages: readonly ModelMessage[] = [
       {
         role: MessageRole.Assistant,
         content: "Answer: B",
@@ -525,8 +526,56 @@ describe("runResultToParquet", () => {
     );
     expect(parsed[0]?.["reasoning"]).toBe("Step 1: ...");
   });
+  it("serializes reasoning from a provider Responses turn end to end", async () => {
+    const output = responsesTurnToModelOutput({
+      text: "Answer: B",
+      outputItems: [
+        {
+          type: "reasoning",
+          id: "rs_1",
+          content: [{ type: "reasoning_text", text: "1. Analyze the request" }],
+          summary: [],
+        },
+        {
+          type: "reasoning",
+          id: "rs_2",
+          encrypted_content: "gAAAAAopaque",
+          summary: [],
+        },
+        {
+          type: "message",
+          content: [{ type: "output_text", text: "Answer: B" }],
+        },
+      ],
+      functionCalls: [],
+      generationTimeMs: 7,
+    });
+    const bufferFromTurn = runResultToParquet({
+      result: {
+        metrics: METRICS,
+        usage: USAGE,
+        sampleScores: [
+          {
+            sampleId: "s0",
+            epoch: 0,
+            score: { value: ScoreValue.Correct, answer: "B", explanation: "" },
+            messages: [output.message],
+            input: "q",
+            target: "B",
+          },
+        ],
+      },
+      meta: META,
+    });
+    const turnRows = await readRows(bufferFromTurn);
+    const parsed: Record<string, unknown>[] = JSON.parse(
+      turnRows[0]!.messages!
+    );
+    expect(parsed[0]?.["reasoning"]).toBe("1. Analyze the request");
+    expect(parsed[0]).not.toHaveProperty("reasoning_details");
+  });
   it("serializes multimodal content parts (image_url) in the messages JSON", async () => {
-    const messages: readonly ChatMessage[] = [
+    const messages: readonly ModelMessage[] = [
       {
         role: MessageRole.User,
         content: "What is this image?",
@@ -535,6 +584,17 @@ describe("runResultToParquet", () => {
           {
             type: "image_url",
             imageUrl: { url: "https://example.com/img.png", detail: "high" },
+          },
+          {
+            type: "video_url",
+            videoUrl: { url: "https://example.com/clip.mp4" },
+          },
+          {
+            type: "video_url",
+            videoUrl: {
+              url: "https://example.com/clip2.mp4",
+              processing: "agentic",
+            },
           },
         ],
       },
@@ -566,10 +626,18 @@ describe("runResultToParquet", () => {
         type: "image_url",
         image_url: { url: "https://example.com/img.png", detail: "high" },
       },
+      { type: "video_url", video_url: { url: "https://example.com/clip.mp4" } },
+      {
+        type: "video_url",
+        video_url: {
+          url: "https://example.com/clip2.mp4",
+          processing: "agentic",
+        },
+      },
     ]);
   });
   it("serializes assistant citations (camelCase→snake_case) in the messages JSON", async () => {
-    const messages: readonly ChatMessage[] = [
+    const messages: readonly ModelMessage[] = [
       {
         role: MessageRole.Assistant,
         content: "Answer based on sources.",

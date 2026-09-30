@@ -3,8 +3,8 @@ import type { Effect, Semaphore } from "effect/Effect";
 import { gen, logWarning, mapError, provideService } from "effect/Effect";
 
 import type {
-  ChatMessage,
   ModelError,
+  ModelMessage,
   ModelOutput,
   ModelUsage,
   ToolCall,
@@ -14,6 +14,7 @@ import type { GenerateConfig, ModelService } from "../../harness/model";
 import type { SolverService } from "../../harness/solver";
 import { Either } from "../../internal/either";
 import { definedValues, isRecord } from "../../internal/guards";
+import type { ResponsesModelService } from "../../providers/responses-model";
 import { withCallCacheSalt } from "../../runtime/response-cache";
 import {
   buildAgentSystemPrompt,
@@ -50,18 +51,20 @@ type Role = (typeof Role)[keyof typeof Role];
 
 export function airlineSolver({
   model,
+  userModel,
   client,
   dataFetchLock,
   opts,
 }: {
   readonly model: ModelService;
+  readonly userModel: ResponsesModelService;
   readonly client: HttpClient.HttpClient;
   readonly dataFetchLock: Semaphore;
-  readonly opts?: SolverOpts;
+  readonly opts: SolverOpts;
 }): SolverService {
   return (state) =>
     gen(function* () {
-      const userModelConfig = opts?.userModelConfig;
+      const userModelConfig = opts.userModelConfig;
       if (!userModelConfig) {
         return yield* new SolverError({
           message:
@@ -79,9 +82,9 @@ export function airlineSolver({
       );
       const task = state.sample.metadata?.["task"];
       const data: AirlineData = loadAirlineData();
-      const userSim = new UserSimulator(userModelConfig);
+      const userSim = new UserSimulator(userModel, userModelConfig);
       userSim.reset(state.sample.input, DEFAULT_FIRST_AGENT_MESSAGE);
-      const messages: ChatMessage[] = [
+      const messages: ModelMessage[] = [
         {
           role: MessageRole.System,
           content: buildAgentSystemPrompt(AIRLINE_POLICY),
@@ -92,8 +95,11 @@ export function airlineSolver({
       const genConfig: GenerateConfig = {
         temperature: AIRLINE_TEMPERATURE,
         tools: AIRLINE_TOOL_DEFINITIONS,
-        ...definedValues(opts?.inference ?? {}),
-        ...(opts?.endpointId !== undefined && { endpointId: opts.endpointId }),
+        reasoningEffort: opts.inference?.reasoningEffort ?? "high",
+        ...definedValues(opts.inference ?? {}),
+        ...definedValues({
+          endpointId: opts.endpointId,
+        }),
       };
       let totalGenerationTimeMs = 0;
       const accUsage = {
@@ -248,7 +254,7 @@ function generateAgentTurn({
   stepCount,
 }: {
   readonly model: ModelService;
-  readonly messages: readonly ChatMessage[];
+  readonly messages: readonly ModelMessage[];
   readonly config: GenerateConfig;
   readonly stepCount: number;
 }): Effect<AgentTurnResult, ModelError> {
@@ -282,7 +288,7 @@ function generateAgentTurn({
   });
 }
 
-function lastAssistantText(messages: readonly ChatMessage[]): string {
+function lastAssistantText(messages: readonly ModelMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m?.role === MessageRole.Assistant) {

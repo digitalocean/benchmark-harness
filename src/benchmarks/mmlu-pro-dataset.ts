@@ -5,6 +5,7 @@ import { effect, provide } from "effect/Layer";
 import type { Stream } from "effect/Stream";
 import { unwrap } from "effect/Stream";
 
+import { resolveCacheStore } from "../datasets/cache-store";
 import type { HfDatasetConfig } from "../datasets/huggingface";
 import { makeHfPageFetcher, paginateHfRows } from "../datasets/huggingface";
 import type { Sample } from "../harness/core";
@@ -12,6 +13,7 @@ import { DatasetError } from "../harness/core";
 import type { DatasetStreamOptions } from "../harness/dataset";
 import { Dataset } from "../harness/dataset";
 import { Either } from "../internal/either";
+import { definedValues } from "../internal/guards";
 import type { RetryConfig } from "../runtime/retry";
 import type {
   MmluProCotExample,
@@ -96,7 +98,9 @@ function makeDatasetConfig(
         "recordToSample is not used by the shared MMLU-Pro dataset layer"
       );
     },
-    ...(retryConfig !== undefined && { retry: retryConfig }),
+    ...definedValues({
+      retry: retryConfig,
+    }),
   };
 }
 
@@ -107,16 +111,25 @@ export function makeMmluProFewShotDatasetLayer(
 ): Layer<Dataset> {
   const validationConfig = {
     ...makeDatasetConfig(MMLU_PRO_VALIDATION_SPLIT, retryConfig),
-    ...(hfToken !== undefined && { hfToken }),
+    ...definedValues({
+      hfToken,
+    }),
   };
   const testConfig = {
     ...makeDatasetConfig(MMLU_PRO_TEST_SPLIT, retryConfig),
-    ...(hfToken !== undefined && { hfToken }),
+    ...definedValues({
+      hfToken,
+    }),
   };
   const makeService = gen(function* () {
     const client = yield* HttpClient.HttpClient;
-    const fetchValidationPage = makeHfPageFetcher(validationConfig, client);
-    const fetchTestPage = makeHfPageFetcher(testConfig, client);
+    const store = resolveCacheStore();
+    const fetchValidationPage = makeHfPageFetcher(
+      validationConfig,
+      client,
+      store
+    );
+    const fetchTestPage = makeHfPageFetcher(testConfig, client, store);
     const size = fetchTestPage(0, 1).pipe(map((page) => page.num_rows_total));
     const stream = (
       opts?: DatasetStreamOptions

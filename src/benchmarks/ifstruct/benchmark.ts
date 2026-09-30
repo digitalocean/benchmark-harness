@@ -16,7 +16,7 @@ import type {
   InferenceOverride,
 } from "../benchmark-config";
 import { IFSTRUCT_META } from "../benchmark-meta";
-import { defineChatBenchmark } from "../define-chat-benchmark";
+import { defineSingleTurnBenchmark } from "../define-single-turn-benchmark";
 import type { Benchmark } from "../types";
 import type {
   IfStructRequirements,
@@ -121,15 +121,17 @@ export const IFSTRUCT_DATASET = {
 
 export function ifStructSolver(
   model: ModelService,
-  opts?: {
+  opts: {
     readonly endpointId?: string;
-    readonly inference?: InferenceOverride;
+    readonly inference: InferenceOverride;
   }
 ): SolverService {
   const config: GenerateConfig = {
     temperature: IFSTRUCT_TEMPERATURE,
-    ...definedValues(opts?.inference ?? {}),
-    ...(opts?.endpointId !== undefined && { endpointId: opts.endpointId }),
+    ...definedValues(opts.inference),
+    ...definedValues({
+      endpointId: opts.endpointId,
+    }),
   };
   return generate(model, config);
 }
@@ -139,11 +141,13 @@ export function makeIfStructDatasetLayer(
 ): Layer<Dataset> {
   return makeHfDatasetLayer({
     ...IFSTRUCT_DATASET,
-    ...(retryConfig !== undefined && { retry: retryConfig }),
+    ...definedValues({
+      retry: retryConfig,
+    }),
   });
 }
 
-export const IFSTRUCT_BENCHMARK: Benchmark = defineChatBenchmark({
+export const IFSTRUCT_BENCHMARK: Benchmark = defineSingleTurnBenchmark({
   id: "ifstruct",
   temperature: IFSTRUCT_TEMPERATURE,
   defaultEpochs: IFSTRUCT_META.defaultEpochs,
@@ -152,20 +156,23 @@ export const IFSTRUCT_BENCHMARK: Benchmark = defineChatBenchmark({
   makeDatasetLayer: makeIfStructDatasetLayer,
   scorer: ifStructScorer,
   makeSolver: (model, config) =>
-    ifStructSolver(model, {
-      ...(config.endpointId !== undefined && { endpointId: config.endpointId }),
-      inference: {
-        temperature: config.temperature,
-        maxTokens: config.maxTokens,
-        reasoningEffort: config.reasoningEffort,
-        timeoutMs: config.timeoutMs,
-        sort: config.sort,
-        providerOnly: config.providerOnly,
-        providerIgnore: config.providerIgnore,
-        allowFallbacks: config.allowFallbacks,
-        cloudflareVersion: config.cloudflareVersion,
-        costTier: config.costTier,
-        costQualityTradeoff: config.costQualityTradeoff,
-      },
-    }),
+    ifStructSolver(
+      model,
+      definedValues({
+        endpointId: config.endpointId,
+        inference: {
+          temperature: config.temperature,
+          maxTokens: config.maxTokens,
+          reasoningEffort: config.reasoningEffort,
+          timeoutMs: config.timeoutMs,
+          sort: config.sort,
+          providerOnly: config.providerOnly,
+          providerIgnore: config.providerIgnore,
+          allowFallbacks: config.allowFallbacks,
+          cloudflareVersion: config.cloudflareVersion,
+          costTier: config.costTier,
+          costQualityTradeoff: config.costQualityTradeoff,
+        },
+      })
+    ),
 });

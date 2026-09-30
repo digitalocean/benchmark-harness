@@ -21,6 +21,7 @@ import { initialTaskState, MessageRole, ScoreValue } from "../../harness/core";
 import { Solver } from "../../harness/solver";
 import type { ResponsesGenerateConfig } from "../../providers/responses-model";
 import { ResponsesModel } from "../../providers/responses-model";
+import { DEFAULT_AGENT_RUNTIME_URL } from "../agent-cli/harness";
 import { SUBMIT_SENTINEL } from "../harbor/prompts";
 import type { CreateSessionInput, ExecResult } from "../harbor/sandbox";
 import { makeFakeSandboxLayer, SandboxSession } from "../harbor/sandbox";
@@ -179,6 +180,7 @@ const SOLVER_OPTS = {
   apiKey: "sk-test",
   stepLimit: 10,
   endpointId: "ep-pinned",
+  inference: { reasoningEffort: "low" },
 } as const;
 const CLAUDE_STREAM = [
   JSON.stringify({
@@ -283,7 +285,7 @@ describe("deep-swe claude agent via ori", () => {
     );
     const agentCreate = log.creates[0];
     expect(agentCreate?.imageBuildSteps?.join("\n")).toContain(
-      "@anthropic-ai/claude-code"
+      DEFAULT_AGENT_RUNTIME_URL
     );
     const remotePaths = (agentCreate?.uploads ?? []).map((u) => u.remotePath);
     expect(remotePaths).toContain("/instruction.md");
@@ -412,7 +414,7 @@ describe("deep-swe solver", () => {
     expect(record.configs.length).toBeGreaterThan(0);
     for (const cfg of record.configs) {
       expect(cfg.endpointId).toBe("ep-pinned");
-      expect(cfg.reasoningEffort).toBe("high");
+      expect(cfg.reasoningEffort).toBe("low");
       expect(cfg.instructions).toContain("helpful assistant");
       expect(cfg.tools?.[0]?.name).toBe("bash");
     }

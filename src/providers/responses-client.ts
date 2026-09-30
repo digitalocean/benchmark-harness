@@ -20,9 +20,11 @@ import { succeed as layerSucceed } from "effect/Layer";
 
 import type { Citation, ModelUsage } from "../harness/core";
 import { ModelError } from "../harness/core";
+import type { ReasoningDetails } from "../harness/reasoning-details";
 import { Either } from "../internal/either";
-import { isRecord } from "../internal/guards";
+import { definedValues, isRecord } from "../internal/guards";
 import { parseSchema, z } from "../internal/zod";
+import { filterTraceHeaders } from "../runner/trace-headers";
 import { recordGenerationId } from "../runtime/generation-ids";
 import type { ResponseCacheAttemptState } from "../runtime/response-cache";
 import {
@@ -43,7 +45,7 @@ import {
 import {
   BENCH_HARNESS_APP_REFERRER,
   BENCH_HARNESS_APP_TITLE,
-} from "./openrouter-model";
+} from "./app-identity";
 import type { ModelErrorIdentifiers } from "./request-identifiers";
 import {
   appendModelErrorIdentifiers,
@@ -64,6 +66,11 @@ export const ResponsesResultSchema = z.object({
 });
 
 export type ResponsesResult = z.infer<typeof ResponsesResultSchema>;
+
+export interface ResponsesReasoning {
+  readonly reasoning?: string;
+  readonly reasoningDetails?: ReasoningDetails;
+}
 
 const RawResponsesTerminalEventSchema = z.object({
   type: z.union([
@@ -109,6 +116,7 @@ export interface ResponsesConfig {
   readonly apiKey: string;
   readonly baseUrl?: string;
   readonly sessionId?: string;
+  readonly traceHeaders?: Readonly<Record<string, string>>;
 }
 
 export const VERSION_OVERRIDE_HEADER =
@@ -120,19 +128,38 @@ export class ResponsesError extends TaggedError("ResponsesError")<
     readonly status?: number;
     readonly retryAfterMs?: number;
     readonly retryable: boolean;
+    readonly providerName?: string;
   } & ModelErrorIdentifiers
 > {}
 
+const ProviderErrorBodySchema = z.object({
+  error: z.object({
+    metadata: z.object({ provider_name: z.string() }),
+  }),
+});
+
+export function providerNameFromErrorBody(body: string): string | undefined {
+  try {
+    const parsed = ProviderErrorBodySchema.safeParse(JSON.parse(body));
+    return parsed.success
+      ? parsed.data.error.metadata.provider_name
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function toModelError(error: ResponsesError): ModelError {
   const status = error.status ?? (error.retryable ? 500 : undefined);
-  return new ModelError({
-    message: error.message,
-    ...(status !== undefined && { status }),
-    ...(error.retryAfterMs !== undefined && {
+  return new ModelError(
+    definedValues({
+      message: error.message,
+      status,
       retryAfterMs: error.retryAfterMs,
-    }),
-    ...pickModelErrorIdentifiers(error),
-  });
+      providerName: error.providerName,
+      ...pickModelErrorIdentifiers(error),
+    })
+  );
 }
 
 export class Responses extends Tag(
@@ -159,6 +186,7 @@ function normalizeBaseUrl(baseUrl: string): string {
 }
 
 export function makeResponsesLayer(config: ResponsesConfig): Layer<Responses> {
+  const traceHeaders = filterTraceHeaders(config.traceHeaders);
   const send = (
     body: ResponsesRequest,
     options: ResponsesSendOptions,
@@ -186,46 +214,51 @@ export function makeResponsesLayer(config: ResponsesConfig): Layer<Responses> {
       apiKey: config.apiKey,
       httpClient,
       retryConfig: { strategy: "none" },
-      ...(config.baseUrl !== undefined && {
-        serverURL: normalizeBaseUrl(config.baseUrl),
+      ...definedValues({
+        serverURL:
+          config.baseUrl !== undefined
+            ? normalizeBaseUrl(config.baseUrl)
+            : undefined,
       }),
     });
     const headers: Record<string, string> = {
       "HTTP-Referer": BENCH_HARNESS_APP_REFERRER,
       "X-OpenRouter-Title": BENCH_HARNESS_APP_TITLE,
+      ...traceHeaders,
       ...options.extraHeaders,
-      ...(options.versionOverride
-        ? { [VERSION_OVERRIDE_HEADER]: `api="${options.versionOverride}"` }
-        : {}),
-      ...(config.sessionId !== undefined && {
+      ...definedValues({
+        [VERSION_OVERRIDE_HEADER]: options.versionOverride
+          ? `api="${options.versionOverride}"`
+          : undefined,
+      }),
+      ...definedValues({
         "x-session-id": config.sessionId,
+        [RESPONSE_CACHE_SALT_HEADER]: attemptState.cacheSalt,
       }),
       [RESPONSE_CACHE_HEADER]: "true",
       [RESPONSE_CACHE_TTL_HEADER]: `${RESPONSE_CACHE_TTL_SECONDS}`,
-      ...(attemptState.cacheSalt !== undefined && {
-        [RESPONSE_CACHE_SALT_HEADER]: attemptState.cacheSalt,
-      }),
     };
     return tryPromise({
       try: async (signal) => {
         identifiers = {};
         const requestBody = {
           ...body,
-          ...(body.cacheControl === undefined &&
-            options.extraBody?.["cache_control"] === undefined && {
-              cacheControl: { type: "ephemeral" as const },
-            }),
+          ...definedValues({
+            cacheControl:
+              body.cacheControl === undefined &&
+              options.extraBody?.["cache_control"] === undefined
+                ? { type: "ephemeral" as const }
+                : undefined,
+          }),
           stream: true,
         } satisfies ResponsesRequest;
         const stream = await client.send(
           { responsesRequest: requestBody },
-          {
+          definedValues({
             fetchOptions: { signal },
-            ...(options.timeoutMs !== undefined && {
-              timeoutMs: options.timeoutMs,
-            }),
+            timeoutMs: options.timeoutMs,
             headers,
-          }
+          })
         );
         if (!isAsyncIterable(stream)) {
           throw new ResponsesError({
@@ -242,8 +275,12 @@ export function makeResponsesLayer(config: ResponsesConfig): Layer<Responses> {
           logUnexpectedResponseCacheMiss({
             ...attemptState,
             isCacheHit,
-            ...(typeof body.model === "string" && { model: body.model }),
-            ...(cacheStatus !== undefined && { cacheStatus }),
+            ...definedValues({
+              model: typeof body.model === "string" ? body.model : undefined,
+            }),
+            ...definedValues({
+              cacheStatus,
+            }),
             ...identifiers,
           });
         })
@@ -356,18 +393,20 @@ function normalizeRawTerminalEvent(
       tool_choice: event.response["tool_choice"] ?? "auto",
       tools: event.response["tools"] ?? [],
       top_p: event.response["top_p"] ?? null,
-      ...(usage !== undefined &&
-        usage !== null && {
-          usage: {
-            ...usage,
-            input_tokens_details: usage["input_tokens_details"] ?? {
-              cached_tokens: 0,
-            },
-            output_tokens_details: usage["output_tokens_details"] ?? {
-              reasoning_tokens: 0,
-            },
-          },
-        }),
+      ...definedValues({
+        usage:
+          usage !== undefined && usage !== null
+            ? {
+                ...usage,
+                input_tokens_details: usage["input_tokens_details"] ?? {
+                  cached_tokens: 0,
+                },
+                output_tokens_details: usage["output_tokens_details"] ?? {
+                  reasoning_tokens: 0,
+                },
+              }
+            : undefined,
+      }),
     },
   };
 }
@@ -535,20 +574,20 @@ export function usageFromResponses(
     webSearchRequests !== undefined ||
     toolCallsRequested !== undefined ||
     toolCallsExecuted !== undefined;
-  return {
-    ...(inputTokens !== undefined && { inputTokens }),
-    ...(outputTokens !== undefined && { outputTokens }),
-    ...(totalTokens !== undefined && { totalTokens }),
-    ...(reasoningTokens !== undefined && { reasoningTokens }),
-    ...(totalCost !== undefined && { totalCost }),
-    ...(hasServerToolUse && {
-      serverToolUse: {
-        ...(webSearchRequests !== undefined && { webSearchRequests }),
-        ...(toolCallsRequested !== undefined && { toolCallsRequested }),
-        ...(toolCallsExecuted !== undefined && { toolCallsExecuted }),
-      },
-    }),
-  };
+  return definedValues({
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    reasoningTokens,
+    totalCost,
+    serverToolUse: hasServerToolUse
+      ? definedValues({
+          webSearchRequests,
+          toolCallsRequested,
+          toolCallsExecuted,
+        })
+      : undefined,
+  });
 }
 
 function numField(
@@ -588,6 +627,82 @@ export function extractMessageText(
     }
   }
   return text;
+}
+
+export function extractReasoning(
+  output: readonly Record<string, unknown>[]
+): ResponsesReasoning {
+  const details: unknown[] = [];
+  const texts: string[] = [];
+  const summaries: string[] = [];
+  for (const item of output) {
+    if (item["type"] !== "reasoning") {
+      continue;
+    }
+    const id = stringField(item, "id");
+    const format = stringField(item, "format");
+    const signature = stringField(item, "signature");
+    for (const text of partTexts(item["content"], "reasoning_text")) {
+      texts.push(text);
+      details.push(
+        definedValues({
+          type: "reasoning.text",
+          text,
+          id,
+          format,
+          signature,
+        })
+      );
+    }
+    for (const summary of partTexts(item["summary"], "summary_text")) {
+      summaries.push(summary);
+      details.push(
+        definedValues({
+          type: "reasoning.summary",
+          summary,
+          id,
+          format,
+        })
+      );
+    }
+    const encrypted = stringField(item, "encrypted_content");
+    if (encrypted !== undefined) {
+      details.push(
+        definedValues({
+          type: "reasoning.encrypted",
+          data: encrypted,
+          id,
+          format,
+        })
+      );
+    }
+  }
+  const readable = texts.length > 0 ? texts : summaries;
+  return definedValues({
+    reasoning: readable.length > 0 ? readable.join("\n\n") : undefined,
+    reasoningDetails: details.length > 0 ? details : undefined,
+  });
+}
+
+function partTexts(parts: unknown, partType: string): string[] {
+  if (!Array.isArray(parts)) {
+    return [];
+  }
+  return parts.flatMap((part) => {
+    if (!isRecord(part) || part["type"] !== partType) {
+      return [];
+    }
+    const text = stringField(part, "text");
+    return text !== undefined ? [text] : [];
+  });
+}
+
+function stringField(
+  record: Readonly<Record<string, unknown>>,
+  key: string
+): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export function findOutputItems(
@@ -669,16 +784,19 @@ function toResponsesError(
       ...modelErrorIdentifiersFromFetchHeaders(cause.headers),
     };
     const retryAfterMs = parseRetryAfter(cause.headers.get("retry-after"));
-    return new ResponsesError({
-      message: appendModelErrorIdentifiers(
-        `OpenRouter HTTP ${cause.statusCode}: ${cause.body}`,
-        errorIdentifiers
-      ),
-      status: cause.statusCode,
-      ...(retryAfterMs !== undefined && { retryAfterMs }),
-      retryable: cause.statusCode === 429 || cause.statusCode >= 500,
-      ...errorIdentifiers,
-    });
+    return new ResponsesError(
+      definedValues({
+        message: appendModelErrorIdentifiers(
+          `OpenRouter HTTP ${cause.statusCode}: ${cause.body}`,
+          errorIdentifiers
+        ),
+        status: cause.statusCode,
+        retryAfterMs,
+        retryable: cause.statusCode === 429 || cause.statusCode >= 500,
+        providerName: providerNameFromErrorBody(cause.body),
+        ...errorIdentifiers,
+      })
+    );
   }
   if (
     cause instanceof RequestAbortedError ||

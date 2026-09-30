@@ -42,8 +42,6 @@ import { ensureTasksCheckedOut } from "./tasks-source";
 
 const SWE_ATLAS_TEMPERATURE = 1;
 
-const SWE_ATLAS_REASONING_EFFORT = "high" as const;
-
 const PER_COMMAND_TIMEOUT_SEC = {
   qa: 900,
   tw: 1800,
@@ -81,7 +79,7 @@ export interface SweAtlasSolverOpts {
   readonly judgeApiKey?: string;
   readonly judgeBaseUrl?: string;
   readonly stepLimit: number;
-  readonly inference?: InferenceOverride;
+  readonly inference: InferenceOverride;
   readonly agent?: HarborAgent;
   readonly agentCli?: AgentCliOpts;
 }
@@ -109,11 +107,14 @@ export function makeSweAtlasSolver(
       const task = loadTask(meta.taskId, meta.track, tasksRoot);
       const agent = opts.agent ?? "mini_swe";
       const cliHarness = isOriAgent(agent) ? getOriHarness(agent) : undefined;
-      const baseCliOpts: AgentCliOpts = opts.agentCli ?? {
-        model: opts.model,
-        apiKey: opts.apiKey,
-        ...(opts.endpointId !== undefined && { endpointId: opts.endpointId }),
-      };
+      const baseCliOpts: AgentCliOpts =
+        opts.agentCli ??
+        definedValues({
+          model: opts.model,
+          apiKey: opts.apiKey,
+          endpointId: opts.endpointId,
+          agentReasoningEffort: opts.inference.reasoningEffort,
+        });
       const cliOpts: AgentCliOpts = {
         ...baseCliOpts,
         appendSystemPrompt: joinAgentPrompts(
@@ -123,8 +124,11 @@ export function makeSweAtlasSolver(
       };
       const session = yield* sessionFactory.create({
         imageTag: meta.dockerImage,
-        ...(cliHarness !== undefined && {
-          imageBuildSteps: agentImageBuildSteps(cliHarness, cliOpts),
+        ...definedValues({
+          imageBuildSteps:
+            cliHarness !== undefined
+              ? agentImageBuildSteps(cliHarness, cliOpts)
+              : undefined,
         }),
         timeoutSec:
           meta.maxAgentTimeoutSec +
@@ -145,11 +149,12 @@ export function makeSweAtlasSolver(
       });
       const genConfig: ResponsesGenerateConfig = {
         temperature: SWE_ATLAS_TEMPERATURE,
-        reasoningEffort: SWE_ATLAS_REASONING_EFFORT,
         tools: [BASH_RESPONSES_TOOL_DEFINITION],
         instructions: MINI_SWE_SYSTEM_MESSAGE,
-        ...definedValues(opts.inference ?? {}),
-        ...(opts.endpointId !== undefined && { endpointId: opts.endpointId }),
+        ...definedValues(opts.inference),
+        ...definedValues({
+          endpointId: opts.endpointId,
+        }),
       };
       try {
         if (cliHarness !== undefined) {
@@ -177,9 +182,10 @@ export function makeSweAtlasSolver(
                   ? `${run.failureDetail}\n\n${cliVerifier.output}`
                   : cliVerifier.output,
                 ...agentCliMetadata(cliHarness.id, run),
-                ...(meta.allowInternet
-                  ? {}
-                  : { agentNetworkForced: true, taskAllowInternet: false }),
+                ...definedValues({
+                  agentNetworkForced: meta.allowInternet ? undefined : true,
+                  taskAllowInternet: meta.allowInternet ? undefined : false,
+                }),
               },
             },
             messages: [

@@ -19,6 +19,8 @@
     "./benchmarks/harbor/modal-sandbox": "./src/benchmarks/harbor/modal-sandbox.ts",
     "./benchmarks/harbor/digitalocean-sandbox": "./src/benchmarks/harbor/digitalocean-sandbox.ts",
     "./benchmarks/agent-cli/schema": "./src/benchmarks/agent-cli/schema.ts",
+    "./benchmarks/agent-cli/harness": "./src/benchmarks/agent-cli/harness.ts",
+    "./benchmarks/agent-cli/runner": "./src/benchmarks/agent-cli/runner.ts",
     "./core": "./src/harness/core.ts",
     "./constants": "./src/harness/constants.ts",
     "./dataset": "./src/harness/dataset.ts",
@@ -49,7 +51,9 @@
     "format:check": "oxfmt src test scripts --check",
     "check": "oxlint",
     "fix": "oxfmt src test scripts --write && oxlint --fix",
-    "mirror-vgi-bench-media": "bun scripts/mirror-vgi-bench-media.ts"
+    "mirror-vgi-bench-media": "bun scripts/mirror-vgi-bench-media.ts",
+    "mirror-mmmu-pro-media": "bun scripts/mirror-mmmu-pro-media.ts",
+    "package-agent-runtime": "scripts/agent-runtime/package.sh"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",
@@ -57,7 +61,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1111.0",
     "@effect/platform": "0.95.0",
     "@google-cloud/storage": "7.19.0",
-    "@openrouter/sdk": "1.2.14",
+    "@openrouter/sdk": "1.2.113",
     "change-case": "5.4.4",
     "chrono-node": "2.9.0",
     "cli-progress": "3.12.0",

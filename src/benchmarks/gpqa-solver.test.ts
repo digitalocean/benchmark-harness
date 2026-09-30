@@ -10,7 +10,7 @@ import {
   noopProgressLayer,
   noopCheckpointLayer,
 } from "../../test/helpers/noop-progress-layer";
-import type { ChatMessage, ModelError, ModelOutput } from "../harness/core";
+import type { ModelMessage, ModelError, ModelOutput } from "../harness/core";
 import { initialTaskState, MessageRole } from "../harness/core";
 import type { GenerateConfig, ModelService } from "../harness/model";
 import { Model } from "../harness/model";
@@ -23,7 +23,7 @@ function recordingModel(record: { config: GenerateConfig | undefined }): {
 } {
   const service: ModelService = {
     generate: (
-      _messages: readonly ChatMessage[],
+      _messages: readonly ModelMessage[],
       config: GenerateConfig
     ): Effect<ModelOutput, ModelError> => {
       record.config = config;
@@ -63,13 +63,18 @@ async function runSolver(
 }
 describe("gpqaSolver inference overrides (openbench parity)", () => {
   it("uses the gpqa temperature default when no override is given", async () => {
-    const config = await runSolver();
+    const config = await runSolver({
+      inference: { reasoningEffort: "high" },
+    });
     expect(config?.temperature).toBe(GPQA_TEMPERATURE);
     expect(config?.endpointId).toBeUndefined();
     expect(config?.maxTokens).toBeUndefined();
   });
   it("forwards endpointId and falls back to the default temperature", async () => {
-    const config = await runSolver({ endpointId: "ep-1" });
+    const config = await runSolver({
+      endpointId: "ep-1",
+      inference: { reasoningEffort: "high" },
+    });
     expect(config?.temperature).toBe(GPQA_TEMPERATURE);
     expect(config?.endpointId).toBe("ep-1");
   });
@@ -103,10 +108,10 @@ describe("gpqaSolver inference overrides (openbench parity)", () => {
   });
   it("drops undefined override fields (does not clobber defaults with undefined)", async () => {
     const config = await runSolver({
-      inference: { maxTokens: 42 },
+      inference: { maxTokens: 42, reasoningEffort: "high" },
     });
     expect(config?.temperature).toBe(GPQA_TEMPERATURE);
     expect(config?.maxTokens).toBe(42);
-    expect(config?.reasoningEffort).toBeUndefined();
+    expect(config?.reasoningEffort).toBe("high");
   });
 });

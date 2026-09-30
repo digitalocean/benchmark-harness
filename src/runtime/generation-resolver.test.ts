@@ -34,11 +34,11 @@ function mockFetch(
   handler: (url: string) => Response
 ): () => readonly string[] {
   const calls: string[] = [];
-  globalThis.fetch = ((input: string | URL | Request) => {
+  globalThis.fetch = (input) => {
     const url = typeof input === "string" ? input : new Request(input).url;
     calls.push(url);
     return Promise.resolve(handler(url));
-  }) as typeof fetch;
+  };
   return () => calls;
 }
 
@@ -226,6 +226,34 @@ describe("makeOpenRouterGenerationResolver", () => {
       "https://example.com/api/v1/generation?id=gen-dummy",
       "https://example.com/api/v1/generation?id=gen-original",
     ]);
+  });
+  it("sends filtered trace headers on the lookup without touching auth", async () => {
+    let request: Request | undefined;
+    globalThis.fetch = (input, init) => {
+      request = input instanceof Request ? input : new Request(input, init);
+      return Promise.resolve(
+        jsonResponse({ data: { response_cache_source_id: "gen-original" } })
+      );
+    };
+    const traceparent =
+      "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    const resolver = makeOpenRouterGenerationResolver({
+      apiKey: "test-key",
+      baseUrl: "https://example.com",
+      pollIntervalMs: 1,
+      maxAttempts: 1,
+      traceHeaders: {
+        traceparent,
+        "x-benchmark-trace": "trace-key",
+        authorization: "Bearer attacker-key",
+      },
+    });
+    await runPromise(
+      resolver.resolveSourceGeneration("gen-dummy", { includeUsage: false })
+    );
+    expect(request?.headers.get("traceparent")).toBe(traceparent);
+    expect(request?.headers.get("x-benchmark-trace")).toBe("trace-key");
+    expect(request?.headers.get("authorization")).toBe("Bearer test-key");
   });
   it("skips the source usage lookup when includeUsage is false", async () => {
     const getCalls = mockFetch(() =>

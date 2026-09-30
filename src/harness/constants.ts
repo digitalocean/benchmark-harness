@@ -11,6 +11,8 @@ export const REASONING_EFFORTS = [
 
 export type ReasoningEffort = ValueOf<typeof REASONING_EFFORTS>;
 
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
+
 export const COST_TIERS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 export type CostTier = ValueOf<typeof COST_TIERS>;
@@ -28,3 +30,15 @@ export const IMAGE_DETAIL_VALUES = [
 ] as const;
 
 export type ImageDetail = ValueOf<typeof IMAGE_DETAIL_VALUES>;
+
+export const VideoProcessingMode = {
+  Agentic: "agentic",
+  Static: "static",
+} as const;
+
+export const VIDEO_PROCESSING_MODES = [
+  VideoProcessingMode.Agentic,
+  VideoProcessingMode.Static,
+] as const;
+
+export type VideoProcessingMode = ValueOf<typeof VIDEO_PROCESSING_MODES>;

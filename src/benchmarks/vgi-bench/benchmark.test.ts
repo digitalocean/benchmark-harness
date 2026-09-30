@@ -110,6 +110,30 @@ describe("vgiBenchRecordToSample", () => {
     expect(sample.metadata?.["downscaled_videos"]).toBe(true);
   });
 
+  it("requests agentic video processing on the video part when configured", () => {
+    const sample = vgiBenchRecordToSample(VGI_RECORD, 0, {
+      mediaManifest: TEST_MANIFEST,
+      videoProcessing: "agentic",
+    });
+    expect(sample.contentParts![0]).toEqual({
+      type: "video_url",
+      videoUrl: {
+        url: "https://mirror.example.com/clip_007.mp4",
+        processing: "agentic",
+      },
+    });
+    expect(sample.metadata?.["video_processing"]).toBe("agentic");
+  });
+
+  it("omits processing from the video part and metadata when not configured", () => {
+    const sample = vgiBenchRecordToSample(VGI_RECORD, 0);
+    expect(sample.contentParts![0]).toEqual({
+      type: "video_url",
+      videoUrl: { url: "https://cdn.seldon.global/videos/clip_007.mp4" },
+    });
+    expect(sample.metadata).not.toHaveProperty("video_processing");
+  });
+
   it("resolves the video through the media manifest when provided", () => {
     const sample = vgiBenchRecordToSample(VGI_RECORD, 0, {
       downscaledVideos: true,
@@ -122,6 +146,38 @@ describe("vgiBenchRecordToSample", () => {
     expect(sample.metadata?.["media_manifest_hash"]).toBe("a".repeat(64));
     expect(sample.metadata?.["downscaled_videos"]).toBeUndefined();
     expect(sample.metadata?.["downscaled_videos_requested"]).toBe(true);
+  });
+
+  it("sends a YouTube watch URL and tags the source when youtubeVideos is set for a YouTube id", () => {
+    const sample = vgiBenchRecordToSample(
+      { ...VGI_RECORD, video_id: "BEIWgGUcz2o" },
+      0,
+      {
+        mediaManifest: TEST_MANIFEST,
+        videoProcessing: "static",
+        youtubeVideos: true,
+      }
+    );
+    expect(sample.contentParts![0]).toEqual({
+      type: "video_url",
+      videoUrl: {
+        url: "https://www.youtube.com/watch?v=BEIWgGUcz2o",
+        processing: "static",
+      },
+    });
+    expect(sample.metadata?.["video_source"]).toBe("youtube");
+  });
+
+  it("falls back to the manifest URL and leaves video_source unset for a non-YouTube id", () => {
+    const sample = vgiBenchRecordToSample(VGI_RECORD, 0, {
+      mediaManifest: TEST_MANIFEST,
+      youtubeVideos: true,
+    });
+    expect(sample.contentParts![0]).toEqual({
+      type: "video_url",
+      videoUrl: { url: "https://mirror.example.com/clip_007.mp4" },
+    });
+    expect(sample.metadata).not.toHaveProperty("video_source");
   });
 
   it("throws when a video is missing from the media manifest", () => {
@@ -224,6 +280,7 @@ describe("VGI-Bench registry", () => {
     const result = parseSchema(BenchmarkRunConfigSchema, {
       benchmarkId: "vgi_bench",
       model: "google/gemini-2.5-flash",
+      reasoningEffort: "high",
     });
     assertRight(result);
     expect(result.right.benchmarkId).toBe("vgi_bench");
@@ -234,6 +291,7 @@ describe("VGI-Bench registry", () => {
     const result = parseSchema(BenchmarkRunConfigSchema, {
       benchmarkId: "vgi_bench",
       model: "google/gemini-2.5-flash",
+      reasoningEffort: "high",
       downscaledVideos: true,
       datasetRevision: "v1.0.0",
     });
@@ -242,12 +300,55 @@ describe("VGI-Bench registry", () => {
     expect(result.right.datasetRevision).toBe("v1.0.0");
   });
 
+  it("parses vgi_bench config with a videoProcessing mode", () => {
+    const result = parseSchema(BenchmarkRunConfigSchema, {
+      benchmarkId: "vgi_bench",
+      model: "google/gemini-3.8-flash",
+      reasoningEffort: "high",
+      videoProcessing: "agentic",
+    });
+    assertRight(result);
+    expect(result.right.videoProcessing).toBe("agentic");
+  });
+
+  it("parses vgi_bench config with youtubeVideos and defaults it to false", () => {
+    const enabled = parseSchema(BenchmarkRunConfigSchema, {
+      benchmarkId: "vgi_bench",
+      model: "google/gemini-3.8-flash",
+      reasoningEffort: "high",
+      youtubeVideos: true,
+    });
+    assertRight(enabled);
+    expect(enabled.right.youtubeVideos).toBe(true);
+    const defaulted = parseSchema(BenchmarkRunConfigSchema, {
+      benchmarkId: "vgi_bench",
+      model: "google/gemini-3.8-flash",
+      reasoningEffort: "high",
+    });
+    assertRight(defaulted);
+    expect(defaulted.right.youtubeVideos).toBe(false);
+  });
+
+  it("rejects an unknown videoProcessing mode", () => {
+    const result = parseSchema(BenchmarkRunConfigSchema, {
+      benchmarkId: "vgi_bench",
+      model: "google/gemini-3.8-flash",
+      reasoningEffort: "high",
+      videoProcessing: "fast",
+    });
+    assertLeft(result);
+  });
+
   it("dispatches runBenchmarkById through the registry entry (network blocked)", async () => {
     restoreNetwork = blockNetwork();
     const result = await runBenchmarkById({
       benchmarkId: "vgi_bench",
       apiKey: "unused",
-      benchmarkConfig: { benchmarkId: "vgi_bench", model: "test/model" },
+      benchmarkConfig: {
+        benchmarkId: "vgi_bench",
+        model: "test/model",
+        reasoningEffort: "high",
+      },
       epochs: 1,
       maxConcurrency: 1,
       range: { start: 0, end: 1 },

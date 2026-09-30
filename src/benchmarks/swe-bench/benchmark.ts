@@ -90,6 +90,7 @@ function makeSweBenchLayer(
       ...(input.baseUrl !== undefined && { baseUrl: input.baseUrl }),
       sessionId: input.sessionId,
       ...(input.modelRetry !== undefined && { retry: input.modelRetry }),
+      traceHeaders: input.traceHeaders,
     });
   const sandboxLayer = makeSweBenchSandboxLayer(benchmarkConfig.modalEnv);
   const solverLayer = layerEffect(Solver)(

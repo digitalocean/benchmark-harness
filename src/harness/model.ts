@@ -4,7 +4,7 @@ import type { Effect } from "effect/Effect";
 import type { ProviderSort } from "../internal/enums";
 import type { CostTier, ReasoningEffort } from "./constants";
 import type {
-  ChatMessage,
+  ModelMessage,
   ModelError,
   ModelOutput,
   ToolDefinition,
@@ -20,7 +20,7 @@ export interface GenerateConfig {
   readonly maxTokens?: number;
   readonly endpointId?: string;
   readonly tools?: readonly ToolDefinition[];
-  readonly reasoningEffort?: ReasoningEffort;
+  readonly reasoningEffort: ReasoningEffort;
   readonly costTier?: CostTier;
   readonly timeoutMs?: number;
   readonly completionTimeoutMs?: number;
@@ -41,7 +41,7 @@ export class Model extends Tag("@openrouter/bench-harness/model")<
 
 export interface ModelService {
   readonly generate: (
-    messages: readonly ChatMessage[],
+    messages: readonly ModelMessage[],
     config: GenerateConfig
   ) => Effect<ModelOutput, ModelError>;
 }

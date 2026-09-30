@@ -9,7 +9,13 @@ import type { Effect } from "effect/Effect";
 import { async, fail, runSync, succeed, tryPromise } from "effect/Effect";
 import { getOrNull } from "effect/Option";
 
+import { resolveCacheStore } from "../../datasets/cache-store";
+import {
+  removeDirRecursive,
+  restrictPermissionsRecursive,
+} from "../../datasets/local-cache";
 import { runHarnessPromise } from "../../internal/effect-logger";
+import { wLog } from "../../internal/log";
 
 export const TERMINAL_BENCH_SOURCE_REPO =
   "https://github.com/harbor-framework/terminal-bench-2-1.git" as const;
@@ -18,14 +24,6 @@ export const TERMINAL_BENCH_SOURCE_COMMIT =
   "c5ee500c185224c97cd6caff7866a990a0057f41" as const;
 
 export const TERMINAL_BENCH_TASKS_SUBDIR = "tasks" as const;
-
-function resolveCacheRoot(): string {
-  const override = getOrNull(runSync(string("BENCH_TASKS_DIR").pipe(option)));
-  if (override && override.length > 0 && isEmptyOrMissing(override)) {
-    return override;
-  }
-  return mkdtempSync(join(tmpdir(), "terminal-bench-2-1-tasks-"));
-}
 
 function isEmptyOrMissing(path: string): boolean {
   try {
@@ -118,7 +116,52 @@ export function resetCheckoutCache(): void {
 }
 
 async function cloneTasks(): Promise<string> {
-  const root = resolveCacheRoot();
+  const override = getOrNull(runSync(string("BENCH_TASKS_DIR").pipe(option)));
+  if (override !== null && override.length > 0 && isEmptyOrMissing(override)) {
+    await cloneInto(override);
+    const tasksDir = join(override, TERMINAL_BENCH_TASKS_SUBDIR);
+    cacheRoot = tasksDir;
+    return tasksDir;
+  }
+  const store = resolveCacheStore();
+  const staging = mkdtempSync(join(tmpdir(), "terminal-bench-2-1-tasks-"));
+  const hydrated = await store.tryHydrateCheckout(
+    staging,
+    "terminal-bench",
+    TERMINAL_BENCH_SOURCE_COMMIT
+  );
+  const resolved =
+    hydrated && isAtPinnedCommit(staging)
+      ? resolveTasksDir(staging)
+      : undefined;
+  if (resolved !== undefined) {
+    restrictPermissionsRecursive(staging);
+    cacheRoot = resolved;
+    return resolved;
+  }
+  if (hydrated) {
+    wLog("GCS checkout hydration produced an unusable tree; re-cloning", {});
+  }
+  removeDirRecursive(staging);
+  const cloneStaging = mkdtempSync(join(tmpdir(), "terminal-bench-2-1-tasks-"));
+  try {
+    await cloneInto(cloneStaging);
+  } catch (error) {
+    removeDirRecursive(cloneStaging);
+    throw error;
+  }
+  restrictPermissionsRecursive(cloneStaging);
+  const tasksDir = join(cloneStaging, TERMINAL_BENCH_TASKS_SUBDIR);
+  cacheRoot = tasksDir;
+  void store.snapshotCheckout(
+    cloneStaging,
+    "terminal-bench",
+    TERMINAL_BENCH_SOURCE_COMMIT
+  );
+  return tasksDir;
+}
+
+async function cloneInto(root: string): Promise<void> {
   await runGit([
     "clone",
     "--depth",
@@ -137,9 +180,6 @@ async function cloneTasks(): Promise<string> {
     TERMINAL_BENCH_SOURCE_COMMIT,
   ]);
   await runGit(["-C", root, "checkout", TERMINAL_BENCH_SOURCE_COMMIT]);
-  const tasksDir = join(root, TERMINAL_BENCH_TASKS_SUBDIR);
-  cacheRoot = tasksDir;
-  return tasksDir;
 }
 
 class GitError extends TaggedError("GitError")<{

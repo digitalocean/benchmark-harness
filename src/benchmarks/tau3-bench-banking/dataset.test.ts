@@ -4,11 +4,16 @@ import { flatMap, provide, runPromise } from "effect/Effect";
 
 import { Dataset } from "../../harness/dataset";
 import { bankingRecordToSample, makeBankingDatasetLayer } from "./dataset";
-import { seedBankingCache, seedBankingTasksRawCache } from "./environment";
+import {
+  makeEmptyBankingData,
+  seedBankingCache,
+  seedBankingTasksRawCache,
+} from "./environment";
 import type { BankingData, Tau3Task } from "./types";
 describe("tau3-bench-banking dataset", () => {
   let originalFetch: typeof global.fetch;
-  const fixtureDb: Partial<BankingData> = {
+  const fixtureDb: BankingData = {
+    ...makeEmptyBankingData(),
     users: { data: { "1": { name: "Test" } } },
   };
   const fixtureTasks: Tau3Task[] = [
@@ -39,7 +44,7 @@ describe("tau3-bench-banking dataset", () => {
   ];
   beforeEach(() => {
     originalFetch = global.fetch;
-    seedBankingCache(fixtureDb as BankingData, fixtureTasks);
+    seedBankingCache(fixtureDb, fixtureTasks);
   });
   afterEach(() => {
     global.fetch = originalFetch;
@@ -97,6 +102,24 @@ describe("tau3-bench-banking dataset", () => {
       );
       expect(size).toBe(fixtureTasks.length);
       expect(fetchCalls).toBe(2);
+    });
+    it("does not retry when maxRetries is 0", async () => {
+      seedBankingTasksRawCache("");
+      let fetchCalls = 0;
+      global.fetch = async () => {
+        fetchCalls++;
+        return new Response("upstream hiccup", { status: 503 });
+      };
+      const layer = makeBankingDatasetLayer({ baseDelayMs: 0, maxRetries: 0 });
+      await expect(
+        runPromise(
+          Dataset.pipe(
+            flatMap((dataset) => dataset.size),
+            provide(layer)
+          )
+        )
+      ).rejects.toThrow();
+      expect(fetchCalls).toBe(1);
     });
   });
 });
