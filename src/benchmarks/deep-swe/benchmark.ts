@@ -18,6 +18,7 @@ import {
   ResponsesModel,
 } from "../../providers/responses-model";
 import { DEEP_SWE_META } from "../benchmark-meta";
+import { makeDigitalOceanSandboxLayerFromEnv } from "../harbor/digitalocean-sandbox";
 import { makeModalSandboxLayer } from "../harbor/modal-sandbox";
 import { SandboxSession } from "../harbor/sandbox";
 import type { Benchmark, BenchmarkRunInput } from "../types";
@@ -26,6 +27,32 @@ import { deepSweScorer } from "./scorer";
 import { makeDeepSweSolver } from "./solver";
 
 const DEEP_SWE_HARNESS_TEMPERATURE = 0;
+
+function makeDeepSweSandboxLayer(
+  modalEnvironment: string
+): Layer<SandboxSession, Error> {
+  const backend = (
+    process.env["BENCH_HARBOR_SANDBOX"] ?? "modal"
+  ).toLowerCase();
+  switch (backend) {
+    case "digitalocean": {
+      return makeDigitalOceanSandboxLayerFromEnv();
+    }
+    case "modal": {
+      return makeModalSandboxLayer({
+        appName: "openrouter-deep-swe",
+        environment: modalEnvironment,
+      });
+    }
+    default: {
+      return layerFail(
+        new Error(
+          `Unsupported BENCH_HARBOR_SANDBOX "${backend}"; expected "modal" or "digitalocean"`
+        )
+      );
+    }
+  }
+}
 
 function makeDeepSweLayer(
   input: BenchmarkRunInput
@@ -54,10 +81,7 @@ function makeDeepSweLayer(
         traceHeaders: input.traceHeaders,
       })
     );
-  const sandboxLayer = makeModalSandboxLayer({
-    appName: "openrouter-deep-swe",
-    environment: benchmarkConfig.modalEnv,
-  });
+  const sandboxLayer = makeDeepSweSandboxLayer(benchmarkConfig.modalEnv);
   const solverLayer = layerEffect(Solver)(
     gen(function* () {
       const model = yield* ResponsesModel;
@@ -93,6 +117,7 @@ function makeDeepSweLayer(
               maxTokens: benchmarkConfig.maxTokens,
               reasoningEffort: benchmarkConfig.reasoningEffort,
               timeoutMs: benchmarkConfig.timeoutMs,
+              completionTimeoutMs: benchmarkConfig.completionTimeoutMs,
               sort: benchmarkConfig.sort,
               providerOnly: benchmarkConfig.providerOnly,
               providerIgnore: benchmarkConfig.providerIgnore,

@@ -1,5 +1,9 @@
 .effect-tsgo/
+.env
+.env.*
+!.env.example
 bench-results/
 dist/
 node_modules/
 *.tsbuildinfo
+logs/

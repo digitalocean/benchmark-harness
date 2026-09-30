@@ -1,14 +1,21 @@
 import { HttpClient } from "@effect/platform";
-import type { Semaphore } from "effect/Effect";
-import { gen, mapError, provideService } from "effect/Effect";
+import type { Effect, Semaphore } from "effect/Effect";
+import { gen, logWarning, mapError, provideService } from "effect/Effect";
 
-import type { ModelMessage, ModelUsage, ToolCall } from "../../harness/core";
+import type {
+  ModelError,
+  ModelMessage,
+  ModelOutput,
+  ModelUsage,
+  ToolCall,
+} from "../../harness/core";
 import { MessageRole, SolverError } from "../../harness/core";
 import type { GenerateConfig, ModelService } from "../../harness/model";
 import type { SolverService } from "../../harness/solver";
 import { Either } from "../../internal/either";
 import { definedValues, isRecord } from "../../internal/guards";
 import type { ResponsesModelService } from "../../providers/responses-model";
+import { withCallCacheSalt } from "../../runtime/response-cache";
 import {
   buildAgentSystemPrompt,
   DEFAULT_FIRST_AGENT_MESSAGE,
@@ -26,7 +33,10 @@ const MAX_STEPS = 200;
 
 const AIRLINE_TEMPERATURE = 0;
 
+const MAX_AGENT_RESPONSE_ATTEMPTS = 3;
+
 export const TerminationReason = {
+  AgentEmptyResponse: "AGENT_EMPTY_RESPONSE",
   UserStop: "USER_STOP",
   MaxSteps: "MAX_STEPS",
 } as const;
@@ -85,7 +95,8 @@ export function airlineSolver({
       const genConfig: GenerateConfig = {
         temperature: AIRLINE_TEMPERATURE,
         tools: AIRLINE_TOOL_DEFINITIONS,
-        ...definedValues(opts.inference),
+        reasoningEffort: opts.inference?.reasoningEffort ?? "high",
+        ...definedValues(opts.inference ?? {}),
         ...definedValues({
           endpointId: opts.endpointId,
         }),
@@ -134,15 +145,28 @@ export function airlineSolver({
             break;
           }
           case Role.Agent: {
-            const output = yield* model.generate(messages, genConfig);
-            totalGenerationTimeMs += output.generationTimeMs ?? 0;
-            if (output.usage) {
-              accUsage.inputTokens += output.usage.inputTokens ?? 0;
-              accUsage.outputTokens += output.usage.outputTokens ?? 0;
-              accUsage.totalTokens += output.usage.totalTokens ?? 0;
-              accUsage.reasoningTokens += output.usage.reasoningTokens ?? 0;
-              accUsage.totalCost += output.usage.totalCost ?? 0;
+            const agentTurn = yield* generateAgentTurn({
+              model,
+              messages,
+              config: genConfig,
+              stepCount,
+            });
+            for (const output of agentTurn.outputs) {
+              totalGenerationTimeMs += output.generationTimeMs ?? 0;
+              if (output.usage) {
+                accUsage.inputTokens += output.usage.inputTokens ?? 0;
+                accUsage.outputTokens += output.usage.outputTokens ?? 0;
+                accUsage.totalTokens += output.usage.totalTokens ?? 0;
+                accUsage.reasoningTokens += output.usage.reasoningTokens ?? 0;
+                accUsage.totalCost += output.usage.totalCost ?? 0;
+              }
             }
+            if (agentTurn.exhausted) {
+              terminationReason = TerminationReason.AgentEmptyResponse;
+              done = true;
+              break;
+            }
+            const output = agentTurn.output;
             const assistantMsg = output.message;
             messages.push(assistantMsg);
             const toolCalls = assistantMsg.toolCalls ?? [];
@@ -208,6 +232,60 @@ export function airlineSolver({
         completed: true,
       };
     });
+}
+
+type AgentTurnResult = AgentTurnSuccess | AgentTurnExhausted;
+
+interface AgentTurnSuccess {
+  readonly output: ModelOutput;
+  readonly outputs: readonly ModelOutput[];
+  readonly exhausted: false;
+}
+
+interface AgentTurnExhausted {
+  readonly outputs: readonly ModelOutput[];
+  readonly exhausted: true;
+}
+
+function generateAgentTurn({
+  model,
+  messages,
+  config,
+  stepCount,
+}: {
+  readonly model: ModelService;
+  readonly messages: readonly ModelMessage[];
+  readonly config: GenerateConfig;
+  readonly stepCount: number;
+}): Effect<AgentTurnResult, ModelError> {
+  return gen(function* () {
+    const outputs: ModelOutput[] = [];
+    for (let attempt = 1; attempt <= MAX_AGENT_RESPONSE_ATTEMPTS; attempt++) {
+      const generation = model.generate(messages, config);
+      const request =
+        attempt === 1
+          ? generation
+          : withCallCacheSalt(
+              `tau-airline-agent-step-${stepCount}-empty-retry-${attempt}`,
+              generation
+            );
+      const output = yield* request;
+      outputs.push(output);
+      if (
+        output.message.content.trim().length > 0 ||
+        (output.message.toolCalls?.length ?? 0) > 0
+      ) {
+        return { output, outputs, exhausted: false } satisfies AgentTurnSuccess;
+      }
+      if (attempt < MAX_AGENT_RESPONSE_ATTEMPTS) {
+        yield* logWarning("TAU Airline agent returned an empty response", {
+          attempt,
+          max_attempts: MAX_AGENT_RESPONSE_ATTEMPTS,
+        });
+      }
+    }
+    return { outputs, exhausted: true } satisfies AgentTurnExhausted;
+  });
 }
 
 function lastAssistantText(messages: readonly ModelMessage[]): string {

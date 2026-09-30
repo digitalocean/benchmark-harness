@@ -73,14 +73,14 @@ export class UserSimulator {
     this.messages.push({ role: MessageRole.User, content: agentMessage });
     return this.callModel();
   }
-
   private callModel(): Effect<string, SimError> {
     const response = (model: string) =>
       retrySalted(this.callModelOnce(model), USER_SIM_RESPONSE_RETRY_SCHEDULE);
+    const fallbackModel = this.config.fallbackModel ?? USER_FALLBACK_MODEL;
     return gen(this, function* (this: UserSimulator) {
       const result = yield* response(this.config.model).pipe(
         withAuxiliaryUsage,
-        catchAll(() => withAuxiliaryUsage(response(USER_FALLBACK_MODEL)))
+        catchAll(() => withAuxiliaryUsage(response(fallbackModel)))
       );
       this.messages.push(
         definedValues({

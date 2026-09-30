@@ -7,8 +7,8 @@ export interface BenchmarkMeta {
 
 export const GPQA_META = {
   id: "gpqa_diamond",
-  defaultEpochs: 10,
-  temperature: 0.5,
+  defaultEpochs: 3,
+  temperature: 1,
 } as const satisfies BenchmarkMeta;
 
 export const MMLU_PRO_META = {
@@ -23,9 +23,9 @@ export const MMMU_PRO_VISION_META = {
 
 export const TAU_BENCH_AIRLINE_META = {
   id: "tau_bench_verified_airline",
-  defaultEpochs: 1,
+  defaultEpochs: 3,
   temperature: 0,
-  userModel: "google/gemini-2.5-flash",
+  userModel: "openai/gpt-5.4-mini",
 } as const satisfies BenchmarkMeta;
 
 export const TAU3_BENCH_BANKING_META = {
@@ -66,6 +66,11 @@ export const SWE_ATLAS_RF_META = {
 
 export const DEEP_SWE_META = {
   id: "deep_swe",
+  defaultEpochs: 1,
+} as const satisfies BenchmarkMeta;
+
+export const SWE_BENCH_VERIFIED_META = {
+  id: "swe_bench_verified",
   defaultEpochs: 1,
 } as const satisfies BenchmarkMeta;
 
@@ -112,6 +117,7 @@ const BENCHMARK_META: Readonly<Record<string, BenchmarkMeta>> = {
   [SWE_ATLAS_TW_META.id]: SWE_ATLAS_TW_META,
   [SWE_ATLAS_RF_META.id]: SWE_ATLAS_RF_META,
   [DEEP_SWE_META.id]: DEEP_SWE_META,
+  [SWE_BENCH_VERIFIED_META.id]: SWE_BENCH_VERIFIED_META,
   [WANDR_META.id]: WANDR_META,
   [BROWSECOMP_META.id]: BROWSECOMP_META,
   [HLE_META.id]: HLE_META,

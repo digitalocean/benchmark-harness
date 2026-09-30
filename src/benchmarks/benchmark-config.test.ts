@@ -38,6 +38,26 @@ describe("benchmark config", () => {
     assertLeft(result);
   });
 
+  it("accepts explicit GPQA and TAU temperature overrides", () => {
+    const gpqa = parseSchema(BenchmarkRunConfigSchema, {
+      benchmarkId: "gpqa_diamond",
+      model: "provider/model",
+      reasoningEffort: "high",
+      temperature: 0.7,
+    });
+    const tau = parseSchema(BenchmarkRunConfigSchema, {
+      benchmarkId: "tau_bench_verified_airline",
+      model: "provider/model",
+      reasoningEffort: "high",
+      temperature: 0.2,
+    });
+
+    assertRight(gpqa);
+    assertRight(tau);
+    expect(gpqa.right).toMatchObject({ temperature: 0.7 });
+    expect(tau.right).toMatchObject({ temperature: 0.2 });
+  });
+
   it("requires reasoningEffort in model benchmark configs", () => {
     const result = parseSchema(BenchmarkRunConfigSchema, {
       benchmarkId: "gpqa_diamond",

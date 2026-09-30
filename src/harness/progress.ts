@@ -52,7 +52,10 @@ export interface SubmitEvent {
 export interface ProgressReporterService {
   readonly onSampleStart: (event: SampleStartEvent) => Effect<void>;
   readonly onSampleEnd: (event: SampleEndEvent) => Effect<void>;
-  readonly onSampleComplete: (count: number) => Effect<void>;
+  readonly onSampleComplete: (
+    processedCount: number,
+    skippedCount: number
+  ) => Effect<void>;
   readonly onAgentStep: (
     event: AgentStepEvent,
     sampleId: string,
@@ -74,7 +77,10 @@ export const NOOP_PROGRESS_REPORTER: ProgressReporterService = {
 export function makeProgressReporter(callbacks: {
   readonly onSampleStart?: (event: SampleStartEvent) => void;
   readonly onSampleEnd?: (event: SampleEndEvent) => void;
-  readonly onSampleComplete?: (count: number) => void;
+  readonly onSampleComplete?: (
+    processedCount: number,
+    skippedCount: number
+  ) => void;
   readonly onAgentStep?: (
     event: AgentStepEvent,
     sampleId: string,
@@ -84,7 +90,8 @@ export function makeProgressReporter(callbacks: {
   return {
     onSampleStart: (e) => sync(() => callbacks.onSampleStart?.(e)),
     onSampleEnd: (e) => sync(() => callbacks.onSampleEnd?.(e)),
-    onSampleComplete: (n) => sync(() => callbacks.onSampleComplete?.(n)),
+    onSampleComplete: (processed, skipped) =>
+      sync(() => callbacks.onSampleComplete?.(processed, skipped)),
     onAgentStep: (e, id, ep) => sync(() => callbacks.onAgentStep?.(e, id, ep)),
   };
 }

@@ -82,22 +82,25 @@ describe("gpqaSolver inference overrides (openbench parity)", () => {
     const config = await runSolver({
       endpointId: "ep-1",
       inference: {
+        temperature: 0.7,
         maxTokens: 100,
         reasoningEffort: "low",
         timeoutMs: 5000,
+        completionTimeoutMs: 1_800_000,
         sort: ProviderSort.Price,
-        providerOnly: ["google-vertex"],
+        providerOnly: ["digitalocean"],
         allowFallbacks: false,
         cloudflareVersion: "ver-1",
       },
     });
     expect(config).toEqual({
-      temperature: GPQA_TEMPERATURE,
+      temperature: 0.7,
       maxTokens: 100,
       reasoningEffort: "low",
       timeoutMs: 5000,
+      completionTimeoutMs: 1_800_000,
       sort: ProviderSort.Price,
-      providerOnly: ["google-vertex"],
+      providerOnly: ["digitalocean"],
       allowFallbacks: false,
       cloudflareVersion: "ver-1",
       endpointId: "ep-1",

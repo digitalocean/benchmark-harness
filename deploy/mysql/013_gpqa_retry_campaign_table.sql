@@ -1,0 +1,28 @@
+CREATE TABLE gpqa_retry_campaigns (
+  id CHAR(36) NOT NULL,
+  source_run_id CHAR(36) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  selected_failure_counts_json JSON NOT NULL,
+  sample_ids_json JSON NOT NULL,
+  source_epochs SMALLINT UNSIGNED NOT NULL,
+  original_run_id CHAR(36) NULL,
+  comparison_run_id CHAR(36) NULL,
+  original_config_json JSON NOT NULL,
+  comparison_config_json JSON NULL,
+  triggered_by_email VARCHAR(320) NOT NULL,
+  started_at DATETIME(3) NOT NULL,
+  finished_at DATETIME(3) NULL,
+  failure_reason TEXT NULL,
+  upload_status VARCHAR(32) NOT NULL DEFAULT 'pending',
+  upload_error TEXT NULL,
+  uploaded_at DATETIME(3) NULL,
+  spaces_bucket VARCHAR(255) NULL,
+  spaces_prefix VARCHAR(1024) NULL,
+  manifest_key VARCHAR(1024) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+    ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  INDEX idx_gpqa_retry_campaigns_source (source_run_id),
+  INDEX idx_gpqa_retry_campaigns_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

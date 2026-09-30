@@ -12,6 +12,7 @@ import {
 import type { Stream } from "effect/Stream";
 import {
   flatMap as streamFlatMap,
+  filter as streamFilter,
   fromIterable as streamFromIterable,
   mapEffect as streamMapEffect,
   runFoldEffect as streamRunFoldEffect,
@@ -49,10 +50,12 @@ import { Solver } from "./solver";
 export interface RunConfig {
   readonly epochs: number;
   readonly maxConcurrency: number;
+  readonly unordered?: boolean | undefined;
   readonly range?: {
     readonly start?: number;
     readonly end?: number;
   };
+  readonly sampleIds?: readonly string[];
   readonly degradeSolverErrors?: boolean;
   readonly logAnnotations?: Readonly<Record<string, string>>;
 }
@@ -71,6 +74,7 @@ interface SampleEpoch {
 
 interface FoldAccumulator {
   scores: SampleScore[];
+  skipped: number;
   usage: UsageTotals;
 }
 
@@ -88,10 +92,17 @@ function sampleEpochStream(
         readonly start?: number;
         readonly end?: number;
       }
-    | undefined
+    | undefined,
+  sampleIds: readonly string[] | undefined
 ): Stream<SampleEpoch, DatasetError> {
   const baseIndex = range?.start ?? 0;
-  return dataset.stream(range).pipe(
+  const samples =
+    sampleIds === undefined
+      ? dataset.stream(range)
+      : dataset
+          .stream(range)
+          .pipe(streamFilter((sample) => sampleIds.includes(sample.id)));
+  return samples.pipe(
     streamZipWithIndex,
     streamFlatMap(([sample, i]) =>
       streamFromIterable(
@@ -143,6 +154,9 @@ function accumulateOutcome(
   item: EvalOutcome
 ): FoldAccumulator {
   acc.scores.push(item.sampleScore);
+  if (item.sampleScore.score.value === ScoreValue.Skipped) {
+    acc.skipped += 1;
+  }
   const u = item.usage;
   acc.usage = {
     inputTokens: acc.usage.inputTokens + (u?.inputTokens ?? 0),
@@ -213,6 +227,7 @@ function evaluateOne(
         messages: state.messages,
         responseItems: state.responseItems,
         requestBody: state.requestBody,
+        generationTimeMs: state.output?.generationTimeMs,
         metadata: state.sample.metadata,
         input: sample.input,
         target: sample.target.text,
@@ -336,10 +351,12 @@ export function runBenchmark(
       const sampleEpochs = sampleEpochStream(
         dataset,
         config.epochs,
-        config.range
+        config.range,
+        config.sampleIds
       );
       const initialAcc: FoldAccumulator = {
         scores: [],
+        skipped: 0,
         usage: { ...ZERO_USAGE },
       };
       return sampleEpochs.pipe(
@@ -358,13 +375,19 @@ export function runBenchmark(
                 withLogSpan("sample")
               )
             ),
-          { concurrency: config.maxConcurrency }
+          {
+            concurrency: config.maxConcurrency,
+            unordered: config.unordered ?? false,
+          }
         ),
         streamRunFoldEffect(initialAcc, (acc, item) =>
           effectGen(function* () {
             const updated = accumulateOutcome(acc, item);
             const reporter = yield* ProgressReporter;
-            yield* reporter.onSampleComplete(updated.scores.length);
+            yield* reporter.onSampleComplete(
+              updated.scores.length,
+              updated.skipped
+            );
             return updated;
           })
         ),

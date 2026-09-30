@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { FetchHttpClient } from "@effect/platform";
 import type { ResponsesRequest } from "@openrouter/sdk/models";
@@ -104,6 +106,16 @@ function readStreamFixture(): Promise<string> {
   );
 }
 
+async function readRequestRecords(
+  path: string
+): Promise<Record<string, unknown>[]> {
+  const content = await readFile(path, "utf8");
+  return content
+    .trim()
+    .split("\n")
+    .map((line) => parseJsonObject(line));
+}
+
 const FUNCTION_CALL_OUTPUT = {
   type: "function_call",
   id: "fc_1",
@@ -140,6 +152,11 @@ function withFunctionCallOutput(stream: string): string {
 }
 
 describe("responses-model", () => {
+  let restore: (() => void) | undefined;
+  let requestLogRoot: string | undefined;
+  const originalRequestLogPath = process.env["REQUEST_LOG_FILE"];
+  const originalRequestLog = process.env["REQUEST_LOG"];
+
   it("constructs explicit Responses message items", () => {
     expect(responsesMessage("user", "solve this")).toEqual({
       type: "message",
@@ -147,11 +164,105 @@ describe("responses-model", () => {
       content: "solve this",
     });
   });
+  it("omits nullable provider fields when reusing output as input", async () => {
+    const captured: {
+      value: CapturedRequest | undefined;
+    } = { value: undefined };
+    restore = installFetchStub(await readStreamFixture(), 200, captured);
+    const layer = makeResponsesModelLayer({
+      model: "glm-5.3-flash",
+      apiKey: "sk-test",
+      baseUrl: "https://example.test",
+    });
+    const exit = await runPromiseExit(
+      gen(function* run() {
+        const model = yield* ResponsesModel;
+        return yield* model.generate(
+          [
+            {
+              type: "message",
+              id: "msg-do",
+              role: "assistant",
+              status: "completed",
+              phase: null,
+              content: [
+                {
+                  annotations: [],
+                  logprobs: null,
+                  text: "Running pwd.",
+                  type: "output_text",
+                },
+              ],
+            },
+            {
+              arguments: '{"command":"pwd"}',
+              call_id: "call-do",
+              caller: null,
+              id: "fc-do",
+              name: "bash",
+              namespace: null,
+              status: "completed",
+              type: "function_call",
+            },
+            {
+              type: "function_call_output",
+              call_id: "call-do",
+              output: '{"returncode":0,"output":"/app"}',
+            },
+          ],
+          {}
+        );
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
 
-  let restore: (() => void) | undefined;
-  afterEach(() => {
+    assertSuccess(exit);
+    expect(captured.value?.body["input"]).toEqual([
+      {
+        type: "message",
+        id: "msg-do",
+        role: "assistant",
+        status: "completed",
+        content: [
+          {
+            annotations: [],
+            text: "Running pwd.",
+            type: "output_text",
+          },
+        ],
+      },
+      {
+        arguments: '{"command":"pwd"}',
+        call_id: "call-do",
+        id: "fc-do",
+        name: "bash",
+        status: "completed",
+        type: "function_call",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call-do",
+        output: '{"returncode":0,"output":"/app"}',
+      },
+    ]);
+  });
+
+  afterEach(async () => {
     restore?.();
     restore = undefined;
+    if (originalRequestLogPath === undefined) {
+      Reflect.deleteProperty(process.env, "REQUEST_LOG_FILE");
+    } else {
+      process.env["REQUEST_LOG_FILE"] = originalRequestLogPath;
+    }
+    if (originalRequestLog === undefined) {
+      Reflect.deleteProperty(process.env, "REQUEST_LOG");
+    } else {
+      process.env["REQUEST_LOG"] = originalRequestLog;
+    }
+    if (requestLogRoot !== undefined) {
+      await rm(requestLogRoot, { recursive: true, force: true });
+      requestLogRoot = undefined;
+    }
   });
   it("builds a Responses request and parses output items, calls, text, and usage", async () => {
     const terminal = await readTerminalFixture();
@@ -200,7 +311,7 @@ describe("responses-model", () => {
       )
     );
     assertSuccess(exit);
-    expect(captured.value?.url).toBe("https://example.test/api/v1/responses");
+    expect(captured.value?.url).toBe("https://example.test/responses");
     expect(captured.value?.body).toMatchObject({
       model: "openai/gpt-5",
       input,
@@ -522,7 +633,7 @@ describe("responses-model", () => {
     expect(error.message).toContain("x_request_id=req-456");
     expect(error.message).toContain("generation_id=gen-789");
   });
-  it("preserves response headers when streaming times out", async () => {
+  it("preserves response headers when streaming completion times out", async () => {
     const original = globalThis.fetch;
     const streamGate = new Promise<void>(() => {});
     globalThis.fetch = async () =>
@@ -554,7 +665,7 @@ describe("responses-model", () => {
       gen(function* run() {
         const model = yield* ResponsesModel;
         return yield* model.generate([], {
-          timeoutMs: 50,
+          completionTimeoutMs: 50,
           reasoningEffort: "high",
         });
       }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
@@ -619,4 +730,100 @@ describe("responses-model", () => {
     expect(error.status).toBe(400);
     expect(error.message).toBe("OpenRouter HTTP 400: bad request");
   });
+  it.serial("logs Responses API request lifecycle events", async () => {
+    requestLogRoot = await mkdtemp(join(tmpdir(), "responses-request-log-"));
+    const requestLogPath = join(requestLogRoot, "requests.jsonl");
+    process.env["REQUEST_LOG"] = "1";
+    process.env["REQUEST_LOG_FILE"] = requestLogPath;
+    const captured: {
+      value: CapturedRequest | undefined;
+    } = { value: undefined };
+    restore = installFetchStub(await readStreamFixture(), 200, captured);
+    const layer = makeResponsesModelLayer({
+      model: "glm-5.3-flash",
+      apiKey: "sk-test",
+      baseUrl: "https://inference.do-ai.run/v1",
+      sessionId: "run-123",
+      retry: { baseDelayMs: 0, maxRetries: 0 },
+    });
+
+    const exit = await runPromiseExit(
+      gen(function* run() {
+        const model = yield* ResponsesModel;
+        return yield* model.generate(
+          [responsesMessage("user", "solve this")],
+          {}
+        );
+      }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+    );
+
+    assertSuccess(exit);
+    const records = await readRequestRecords(requestLogPath);
+    expect(records.map((record) => record["event"])).toEqual([
+      "started",
+      "progress",
+      "progress",
+      "completed",
+    ]);
+    expect(records[0]).toMatchObject({
+      model: "glm-5.3-flash",
+      session_id: "run-123",
+      url: "https://inference.do-ai.run/v1/responses",
+      request_body: {
+        model: "glm-5.3-flash",
+        stream: true,
+      },
+    });
+    expect(records.at(-1)).toMatchObject({
+      event: "completed",
+      status: 200,
+      ok: true,
+      generation_id: "gen-1784161874-CXX4U5I6Ej7Z5hTnf0wU",
+    });
+  });
+  it.serial(
+    "enforces and logs the full Responses completion timeout",
+    async () => {
+      requestLogRoot = await mkdtemp(join(tmpdir(), "responses-request-log-"));
+      const requestLogPath = join(requestLogRoot, "requests.jsonl");
+      process.env["REQUEST_LOG"] = "1";
+      process.env["REQUEST_LOG_FILE"] = requestLogPath;
+      const original = globalThis.fetch;
+      globalThis.fetch = async () =>
+        new Response(new ReadableStream({ start: () => undefined }), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      restore = () => {
+        globalThis.fetch = original;
+      };
+      const layer = makeResponsesModelLayer({
+        model: "glm-5.3-flash",
+        apiKey: "sk-test",
+        baseUrl: "https://inference.do-ai.run/v1",
+        retry: { baseDelayMs: 0, maxRetries: 0 },
+      });
+
+      const exit = await runPromiseExit(
+        gen(function* run() {
+          const model = yield* ResponsesModel;
+          return yield* model.generate([], { completionTimeoutMs: 25 });
+        }).pipe(provide(layer.pipe(layerProvide(FetchHttpClient.layer))))
+      );
+
+      assertFailure(exit);
+      const error = getOrThrow(failureOption(exit.cause));
+      expect(error.status).toBe(408);
+      expect(error.message).toContain("did not complete within 25ms");
+      const records = await readRequestRecords(requestLogPath);
+      expect(records).toHaveLength(2);
+      expect(records[0]?.["event"]).toBe("started");
+      expect(records[1]).toMatchObject({
+        event: "completed",
+        status: 408,
+        ok: false,
+        failure_stage: "transport",
+      });
+    }
+  );
 });

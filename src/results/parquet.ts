@@ -55,14 +55,7 @@ export interface RunResultToParquetInput {
 
 interface ColumnSpec {
   readonly name: string;
-  readonly type:
-    | "INT32"
-    | "INT64"
-    | "FLOAT"
-    | "DOUBLE"
-    | "BOOLEAN"
-    | "STRING"
-    | "JSON";
+  readonly type: "INT32" | "INT64" | "FLOAT" | "DOUBLE" | "BOOLEAN" | "STRING";
   readonly nullable: boolean;
 }
 
@@ -72,7 +65,7 @@ const COLUMN_SPECS = [
   { name: "model", type: "STRING", nullable: false },
   { name: "epochs", type: "INT32", nullable: false },
   { name: "temperature", type: "FLOAT", nullable: true },
-  { name: "benchmark_config", type: "JSON", nullable: true },
+  { name: "benchmark_config", type: "STRING", nullable: true },
   { name: "created_at", type: "STRING", nullable: false },
   { name: "accuracy", type: "DOUBLE", nullable: false },
   { name: "total_questions", type: "INT32", nullable: false },
@@ -85,21 +78,22 @@ const COLUMN_SPECS = [
   { name: "generation_time_ms", type: "INT32", nullable: false },
   { name: "epoch_total_questions", type: "INT32", nullable: true },
   { name: "epoch_correct_answers", type: "INT32", nullable: true },
-  { name: "extra_scores", type: "JSON", nullable: true },
-  { name: "primary_score", type: "JSON", nullable: true },
+  { name: "extra_scores", type: "STRING", nullable: true },
+  { name: "primary_score", type: "STRING", nullable: true },
   { name: "sample_id", type: "STRING", nullable: false },
   { name: "epoch", type: "INT32", nullable: false },
+  { name: "sample_generation_time_ms", type: "INT32", nullable: true },
   { name: "input", type: "STRING", nullable: true },
   { name: "target", type: "STRING", nullable: true },
   { name: "score_value", type: "STRING", nullable: false },
   { name: "answer", type: "STRING", nullable: true },
   { name: "explanation", type: "STRING", nullable: true },
-  { name: "scorer_trajectory", type: "JSON", nullable: true },
-  { name: "response_items", type: "JSON", nullable: true },
-  { name: "request_body", type: "JSON", nullable: true },
-  { name: "generation_ids", type: "JSON", nullable: true },
-  { name: "messages", type: "JSON", nullable: true },
-  { name: "metadata", type: "JSON", nullable: true },
+  { name: "scorer_trajectory", type: "STRING", nullable: true },
+  { name: "response_items", type: "STRING", nullable: true },
+  { name: "request_body", type: "STRING", nullable: true },
+  { name: "generation_ids", type: "STRING", nullable: true },
+  { name: "messages", type: "STRING", nullable: true },
+  { name: "metadata", type: "STRING", nullable: true },
 ] as const satisfies readonly ColumnSpec[];
 
 type ColumnName = (typeof COLUMN_SPECS)[number]["name"];
@@ -220,6 +214,9 @@ function cellValue(name: ColumnName, ctx: RowContext, s: SampleScore): unknown {
     }
     case "epoch": {
       return s.epoch;
+    }
+    case "sample_generation_time_ms": {
+      return s.generationTimeMs ?? null;
     }
     case "input": {
       return s.input ?? null;

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { Presets, SingleBar } from "cli-progress";
@@ -32,6 +33,30 @@ import { parseSchema } from "../internal/zod";
 import { makeLocalResultStore } from "../results/result-store";
 import { datasetSizeById, runBenchmarkById } from "../runner/run-by-id";
 
+export function writeProgress(
+  processed: number,
+  total: number,
+  skipped = 0
+): void {
+  const path = process.env["BENCH_PROGRESS_FILE"];
+  if (path === undefined) {
+    return;
+  }
+  const temporaryPath = `${path}.${process.pid}.tmp`;
+  writeFileSync(
+    temporaryPath,
+    `${JSON.stringify({
+      processed,
+      completed: processed - skipped,
+      skipped,
+      total,
+      percentage: total === 0 ? 100 : (processed / total) * 100,
+      updatedAt: new Date().toISOString(),
+    })}\n`
+  );
+  renameSync(temporaryPath, path);
+}
+
 interface CliArgs {
   readonly benchmark: string;
   readonly model: string | undefined;
@@ -40,10 +65,12 @@ interface CliArgs {
   readonly end?: number;
   readonly epochs?: number;
   readonly concurrency: number;
+  readonly unordered: boolean;
   readonly endpointId?: string;
   readonly solverConfig?: string;
   readonly artifactDir?: string;
   readonly resumeId?: string;
+  readonly sampleIds: readonly string[];
   readonly imageDetail?: ImageDetail;
   readonly costTier?: CostTier;
   readonly reasoningEffort: ReasoningEffort;
@@ -54,6 +81,10 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     const idx = argv.indexOf(flag);
     return idx !== -1 ? argv[idx + 1] : undefined;
   };
+  const getAll = (flag: string): string[] =>
+    argv.flatMap((value, index) =>
+      value === flag && argv[index + 1] !== undefined ? [argv[index + 1]!] : []
+    );
   const num = (flag: string): number | undefined => {
     const raw = get(flag);
     return raw !== undefined ? Number(raw) : undefined;
@@ -65,11 +96,13 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     start: num("--start"),
     end: num("--end"),
     epochs: num("--epochs"),
-    concurrency: num("--concurrency") ?? 8,
+    concurrency: num("--concurrency") ?? 3,
+    unordered: argv.includes("--unordered"),
     endpointId: get("--endpoint-id"),
     solverConfig: get("--solver-config"),
     artifactDir: get("--artifact-dir"),
     resumeId: get("--resume-id"),
+    sampleIds: getAll("--sample-id"),
     imageDetail: validateImageDetail(get("--image-detail")),
     costTier: validateCostTier(get("--cost-tier")),
     reasoningEffort: validateReasoningEffort(get("--reasoning-effort")),
@@ -142,6 +175,29 @@ function resolveApiKey(): string {
   return keyValue;
 }
 
+export function tauAirlineUserSimulatorFromEnv(
+  env: NodeJS.ProcessEnv = process.env
+):
+  | {
+      readonly apiKey: string;
+      readonly baseUrl: string;
+      readonly model: string;
+    }
+  | undefined {
+  const apiKey = env["TAU_AIRLINE_USER_SIMULATOR_API_KEY"]?.trim();
+  if (!apiKey) {
+    return undefined;
+  }
+  return {
+    apiKey,
+    baseUrl:
+      env["TAU_AIRLINE_USER_SIMULATOR_BASE_URL"]?.trim() ||
+      "https://generativelanguage.googleapis.com/v1beta/openai",
+    model:
+      env["TAU_AIRLINE_USER_SIMULATOR_MODEL"]?.trim() || "gemini-2.5-flash",
+  };
+}
+
 function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const benchmark = getBenchmark(args.benchmark);
@@ -151,6 +207,10 @@ function main(): Promise<void> {
     );
   }
   const apiKey = resolveApiKey();
+  const tauAirlineUserSimulator =
+    args.benchmark === "tau_bench_verified_airline"
+      ? tauAirlineUserSimulatorFromEnv()
+      : undefined;
   const baseUrl = getOrNull(
     runSync(string("OPENROUTER_BASE_URL").pipe(option))
   );
@@ -190,11 +250,14 @@ function main(): Promise<void> {
         reasoningEffort: args.reasoningEffort,
       });
       process.stderr.write(
-        `Running ${args.benchmark}${args.model !== undefined ? ` on ${args.model}` : ""}${args.solverConfig !== undefined ? ` (solver-config=${args.solverConfig})` : ""}${artifactDir !== undefined ? ` (artifact-dir=${artifactDir})` : ""} (epochs=${epochs}, concurrency=${args.concurrency}, reasoning-effort=${args.reasoningEffort}${range !== undefined ? `, range=${range.start ?? 0}..${range.end ?? "end"}` : ""}, session=${sessionId})...\n`
+        `Running ${args.benchmark}${args.model !== undefined ? ` on ${args.model}` : ""}${args.solverConfig !== undefined ? ` (solver-config=${args.solverConfig})` : ""}${artifactDir !== undefined ? ` (artifact-dir=${artifactDir})` : ""} (epochs=${epochs}, concurrency=${args.concurrency}, unordered=${args.unordered}, reasoning-effort=${args.reasoningEffort}${range !== undefined ? `, range=${range.start ?? 0}..${range.end ?? "end"}` : ""}, session=${sessionId})...\n`
       );
-      const total = yield* promise(() =>
-        resolveTotalEvaluations(args.benchmark, range, epochs)
-      );
+      const total =
+        args.sampleIds.length === 0
+          ? yield* promise(() =>
+              resolveTotalEvaluations(args.benchmark, range, epochs)
+            )
+          : args.sampleIds.length * epochs;
       const bar = new SingleBar(
         {
           format:
@@ -203,37 +266,61 @@ function main(): Promise<void> {
         Presets.shades_classic
       );
       let currentSample = "";
+      let lastLoggedProgressMilestone = 0;
       if (total !== undefined) {
         bar.start(total, 0, { sample: "" });
+        writeProgress(0, total);
       }
       const result = yield* promise(() =>
-        runBenchmarkById(
-          definedValues({
-            benchmarkId: args.benchmark,
-            apiKey,
-            benchmarkConfig: benchmarkRunConfig,
-            epochs,
-            maxConcurrency: args.concurrency,
-            baseUrl: baseUrl ? baseUrl : undefined,
+        runBenchmarkById({
+          benchmarkId: args.benchmark,
+          apiKey,
+          ...definedValues({
+            userSimulator: tauAirlineUserSimulator,
+            baseUrl: baseUrl ?? undefined,
             range,
-            sessionId,
-            resultStore: makeLocalResultStore({
-              dir: join(process.cwd(), "bench-results"),
-            }),
-            progressReporter: makeProgressReporter({
-              onSampleComplete: (completed) =>
-                bar.update(completed, { sample: currentSample }),
-              onSampleStart: (event) => {
-                currentSample = `#${event.sampleIndex}`;
-                bar.update({ sample: currentSample });
-              },
-              onSampleEnd: () => {
-                currentSample = "";
-                bar.update({ sample: currentSample });
-              },
-            }),
-          })
-        )
+            sampleIds: args.sampleIds.length > 0 ? args.sampleIds : undefined,
+          }),
+          benchmarkConfig: benchmarkRunConfig,
+          epochs,
+          maxConcurrency: args.concurrency,
+          unordered: args.unordered,
+          sessionId,
+          resultStore: makeLocalResultStore({
+            dir:
+              process.env["BENCH_RESULTS_DIR"] ??
+              join(process.cwd(), "bench-results"),
+          }),
+          progressReporter: makeProgressReporter({
+            onSampleComplete: (processed, skipped) => {
+              bar.update(processed, { sample: currentSample });
+              if (total !== undefined) {
+                writeProgress(processed, total, skipped);
+                const percentage = (processed / total) * 100;
+                const milestone = Math.floor(percentage / 10) * 10;
+                if (milestone > lastLoggedProgressMilestone) {
+                  lastLoggedProgressMilestone = milestone;
+                  process.stderr.write(
+                    `[runtime] ${processed}/${total} evaluations processed (${percentage.toFixed(1)}%); ${skipped} skipped; memory=${JSON.stringify(process.memoryUsage())}\n`
+                  );
+                }
+                if (processed === total) {
+                  process.stderr.write(
+                    "[runtime] All evaluations are processed. Final aggregation and Parquet persistence are starting; the run is not complete until this stage succeeds.\n"
+                  );
+                }
+              }
+            },
+            onSampleStart: (event) => {
+              currentSample = `#${event.sampleIndex}`;
+              bar.update({ sample: currentSample });
+            },
+            onSampleEnd: () => {
+              currentSample = "";
+              bar.update({ sample: currentSample });
+            },
+          }),
+        })
       );
       bar.stop();
       if (Either.isLeft(result)) {
@@ -420,15 +507,14 @@ export function buildBenchmarkConfig(opts: {
   } = opts;
   switch (benchmarkId) {
     case "gpqa_diamond": {
-      return {
+      return buildSchemaValidatedConfig({
         benchmarkId: "gpqa_diamond",
         model: requireModel("gpqa_diamond", model),
-        ...definedValues({
-          endpointId,
-          costTier,
-        }),
+        endpointId,
+        panelConfig,
+        costTier,
         reasoningEffort,
-      };
+      });
     }
     case "mmlu_pro": {
       return {
@@ -511,6 +597,7 @@ export function buildBenchmarkConfig(opts: {
     case "swe_atlas_tw":
     case "swe_atlas_rf":
     case "deep_swe":
+    case "swe_bench_verified":
     case "wandr":
     case "search_browsecomp":
     case "search_hle":

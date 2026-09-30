@@ -28,7 +28,9 @@ export interface OpenRouterModelConfig {
 
 export function normalizeBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/u, "");
-  return trimmed.endsWith("/api/v1") ? trimmed : `${trimmed}/api/v1`;
+  return trimmed.endsWith("/api/v1") || trimmed.endsWith("/v1")
+    ? trimmed
+    : `${trimmed}/api/v1`;
 }
 
 export function makeOpenRouterModelLayer(

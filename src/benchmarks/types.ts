@@ -18,6 +18,11 @@ export interface BenchmarkRunInput<
 > {
   readonly apiKey: string;
   readonly baseUrl?: string;
+  readonly userSimulator?: {
+    readonly apiKey: string;
+    readonly baseUrl: string;
+    readonly model: string;
+  };
   readonly benchmarkConfig: Config;
   readonly sessionId: string;
   readonly datasetRetry?: RetryConfig;

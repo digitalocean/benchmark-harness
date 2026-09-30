@@ -10,8 +10,8 @@ import { chain, generate, systemMessage } from "../harness/solver";
 import { definedValues } from "../internal/guards";
 import type { RetryConfig } from "../runtime/retry";
 import type {
-  FixedTemperatureInferenceOverride,
   GpqaBenchmarkConfig,
+  InferenceOverride,
 } from "./benchmark-config";
 import { GPQA_META } from "./benchmark-meta";
 import { defineSingleTurnBenchmark } from "./define-single-turn-benchmark";
@@ -92,16 +92,17 @@ export const GPQA_DATASET = {
 
 export function gpqaSolver(
   model: ModelService,
-  opts: {
+  opts?: {
     readonly endpointId?: string;
-    readonly inference: FixedTemperatureInferenceOverride;
+    readonly inference?: InferenceOverride;
   }
 ): SolverService {
   const config: GenerateConfig = {
     temperature: GPQA_TEMPERATURE,
-    ...definedValues(opts.inference),
+    reasoningEffort: opts?.inference?.reasoningEffort ?? "high",
+    ...definedValues(opts?.inference ?? {}),
     ...definedValues({
-      endpointId: opts.endpointId,
+      endpointId: opts?.endpointId,
     }),
   };
   return chain(
@@ -137,9 +138,11 @@ export const GPQA_BENCHMARK: Benchmark = defineSingleTurnBenchmark({
       definedValues({
         endpointId: config.endpointId,
         inference: {
+          temperature: config.temperature,
           maxTokens: config.maxTokens,
           reasoningEffort: config.reasoningEffort,
           timeoutMs: config.timeoutMs,
+          completionTimeoutMs: config.completionTimeoutMs,
           sort: config.sort,
           providerOnly: config.providerOnly,
           providerIgnore: config.providerIgnore,
@@ -147,6 +150,7 @@ export const GPQA_BENCHMARK: Benchmark = defineSingleTurnBenchmark({
           cloudflareVersion: config.cloudflareVersion,
           costTier: config.costTier,
           costQualityTradeoff: config.costQualityTradeoff,
+          pinModel: config.pinModel,
         },
       })
     ),

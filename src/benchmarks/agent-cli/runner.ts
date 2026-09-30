@@ -84,6 +84,7 @@ export function isSafeOriSessionId(sessionId: string): boolean {
 export interface AgentCliOpts {
   readonly model: string;
   readonly apiKey: string;
+  readonly baseUrl?: string;
   readonly sessionId?: string;
   readonly endpointId?: string;
   readonly agentPackage?: string;
@@ -112,11 +113,32 @@ export function normalizeAgentModel(model: string): string {
   return rest.includes("/") ? rest : model;
 }
 
+export function isDigitalOceanInferenceBaseUrl(
+  baseUrl: string | undefined
+): boolean {
+  if (baseUrl === undefined) {
+    return false;
+  }
+  try {
+    const { hostname } = new URL(baseUrl);
+    return (
+      hostname === "inference.do-ai.run" ||
+      hostname === "inference.do-ai-test.run"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function buildAgentCliEnv(opts: AgentCliOpts): Record<string, string> {
   const env: Record<string, string> = {
     OPENROUTER_API_KEY: opts.apiKey,
     TB_MODEL: normalizeAgentModel(opts.model),
   };
+  if (opts.baseUrl !== undefined) {
+    env["ORI_OPENROUTER_BASE_URL"] = opts.baseUrl;
+    env["TB_INFERENCE_BASE_URL"] = opts.baseUrl;
+  }
   if (opts.endpointId !== undefined) {
     env["OPENROUTER_ENDPOINT_ID"] = opts.endpointId;
   }
@@ -181,6 +203,8 @@ export function runAgentCli(input: {
   readonly timeoutMs: number;
 }): Effect<AgentCliRunResult, SolverError> {
   const { session, harness, opts, instructionPath, timeoutMs } = input;
+  const useCustomPiProvider =
+    harness.id === "pi" && isDigitalOceanInferenceBaseUrl(opts.baseUrl);
   const script = harness.buildRunScript({
     instructionPath,
     logPath: harness.remoteLogPath,
@@ -190,6 +214,7 @@ export function runAgentCli(input: {
     hasAllowedTools: (opts.allowedTools ?? []).length > 0,
     hasDisallowedTools: (opts.disallowedTools ?? []).length > 0,
     isolateAgentConfig: opts.isolateAgentConfig === true,
+    useCustomPiProvider,
   });
   return gen(function* () {
     if (
@@ -201,7 +226,9 @@ export function runAgentCli(input: {
         message: `sessionId contains a control character, which ori replaces with a fresh UUID and silently detaches the run from its generations (id=${JSON.stringify(opts.sessionId)})`,
       });
     }
-    yield* installOri({ session, harness, opts });
+    if (!useCustomPiProvider) {
+      yield* installOri({ session, harness, opts });
+    }
     const startedAt = yield* currentTimeMillis;
     const outcome = yield* session
       .exec(["bash", "-c", script], buildAgentCliEnv(opts), timeoutMs)

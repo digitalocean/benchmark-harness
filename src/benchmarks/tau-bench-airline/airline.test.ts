@@ -1,16 +1,34 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 
-import { FetchHttpClient } from "@effect/platform";
-import { makeSemaphore, provide, runPromise, runSync } from "effect/Effect";
+import { FetchHttpClient, HttpClient } from "@effect/platform";
+import {
+  gen,
+  makeSemaphore,
+  provide,
+  runPromise,
+  runSync,
+  sync,
+} from "effect/Effect";
+import { mergeAll } from "effect/Layer";
 
-import { MessageRole, ScoreValue } from "../../harness/core";
+import {
+  noopCheckpointLayer,
+  noopProgressLayer,
+} from "../../../test/helpers/noop-progress-layer";
+import { initialTaskState, MessageRole, ScoreValue } from "../../harness/core";
+import type { ModelService } from "../../harness/model";
 import { isRecord } from "../../internal/guards";
 import { assertRight } from "../../internal/testing";
 import { parseSchema } from "../../internal/zod";
+import type { ResponsesModelService } from "../../providers/responses-model";
 import { TauBenchAirlineConfigSchema } from "../benchmark-config";
 import { benchmarkIds, getBenchmark } from "../registry";
 import { compareActionWithToolCall } from "./action-match";
-import { airlineRecordToSample, TAU_BENCH_AIRLINE_ID } from "./benchmark";
+import {
+  airlineRecordToSample,
+  resolveAirlineUserModel,
+  TAU_BENCH_AIRLINE_ID,
+} from "./benchmark";
 import {
   ensureAirlineData,
   loadAirlineData,
@@ -18,6 +36,7 @@ import {
 } from "./environment";
 import { evaluateSimulation } from "./evaluator";
 import { airlineScorer } from "./scorer";
+import { airlineSolver, TerminationReason } from "./solver";
 import { AIRLINE_TOOL_DEFINITIONS } from "./tools/definitions";
 import { invokeTool } from "./tools/handlers";
 import type { AirlineData, Tau2Task } from "./types";
@@ -100,11 +119,25 @@ describe("tau_bench_verified_airline registry", () => {
     expect(b).toBeDefined();
     expect(b?.id).toBe("tau_bench_verified_airline");
     expect(b?.temperature).toBe(0);
-    expect(b?.defaultEpochs).toBe(1);
-    expect(b?.userModel).toBe("google/gemini-2.5-flash");
+    expect(b?.defaultEpochs).toBe(3);
+    expect(b?.userModel).toBe("openai/gpt-5.4-mini");
   });
   it("appears in benchmarkIds()", () => {
     expect(benchmarkIds()).toContain("tau_bench_verified_airline");
+  });
+  it("uses the DigitalOcean user-model slug only for DigitalOcean inference", () => {
+    expect(
+      resolveAirlineUserModel(
+        "openai/gpt-5.4-mini",
+        "https://inference.do-ai.run/v1"
+      )
+    ).toBe("openai-gpt-5.4-mini");
+    expect(
+      resolveAirlineUserModel(
+        "openai/gpt-5.4-mini",
+        "https://openrouter.ai/api/v1"
+      )
+    ).toBe("openai/gpt-5.4-mini");
   });
 });
 describe("tau_bench_verified_airline config", () => {
@@ -260,6 +293,199 @@ describe("compareActionWithToolCall", () => {
         note: "x",
       })
     ).toBe(false);
+  });
+});
+describe("airlineSolver", () => {
+  it.serial(
+    "retries empty agent responses three times and scores exhaustion as incorrect",
+    async () => {
+      const originalFetch = globalThis.fetch;
+      let agentCalls = 0;
+      let userSimulatorCalls = 0;
+      globalThis.fetch = async () => {
+        userSimulatorCalls += 1;
+        return Response.json({
+          choices: [{ message: { content: "I need help with my flight." } }],
+        });
+      };
+      const userModel: ResponsesModelService = {
+        generate: () =>
+          sync(() => {
+            userSimulatorCalls += 1;
+            return {
+              outputItems: [],
+              functionCalls: [],
+              text: "I need help with my flight.",
+              generationTimeMs: 1,
+            };
+          }),
+      };
+      const model: ModelService = {
+        generate: () =>
+          sync(() => {
+            agentCalls += 1;
+            return {
+              completion: "",
+              message: { role: MessageRole.Assistant, content: " " },
+              usage: {
+                inputTokens: 10,
+                outputTokens: 1,
+                totalTokens: 11,
+                totalCost: 0.001,
+              },
+              generationTimeMs: 100,
+            };
+          }),
+      };
+      try {
+        seedAirlineDataCache(makeTestData());
+        const state = await runPromise(
+          gen(function* () {
+            const client = yield* HttpClient.HttpClient;
+            const dataFetchLock = yield* makeSemaphore(1);
+            return yield* airlineSolver({
+              model,
+              userModel,
+              client,
+              dataFetchLock,
+              opts: {
+                userModelConfig: {
+                  apiKey: "test",
+                  model: "gemini-2.5-flash",
+                  baseUrl: "https://example.test",
+                  reasoningEffort: "medium",
+                },
+              },
+            })(
+              initialTaskState({
+                id: "empty-agent-response",
+                input: "Scenario",
+                target: { text: "" },
+              })
+            );
+          }).pipe(
+            provide(
+              mergeAll(
+                FetchHttpClient.layer,
+                noopProgressLayer,
+                noopCheckpointLayer
+              )
+            )
+          )
+        );
+        expect(agentCalls).toBe(3);
+        expect(userSimulatorCalls).toBe(1);
+        expect(state.completed).toBe(true);
+        expect(state.sample.metadata?.["terminationReason"]).toBe(
+          TerminationReason.AgentEmptyResponse
+        );
+        expect(state.output?.usage).toMatchObject({
+          inputTokens: 30,
+          outputTokens: 3,
+          totalTokens: 33,
+          totalCost: 0.003,
+        });
+        expect(state.output?.generationTimeMs).toBe(300);
+        const score = runSync(airlineScorer(state, { text: "" }));
+        expect(score.value).toBe(ScoreValue.Incorrect);
+        expect(score.explanation).toContain(
+          TerminationReason.AgentEmptyResponse
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  );
+
+  it.serial("continues when the third agent response has content", async () => {
+    const originalFetch = globalThis.fetch;
+    let agentCalls = 0;
+    let userSimulatorCalls = 0;
+    globalThis.fetch = async () => {
+      userSimulatorCalls += 1;
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content:
+                userSimulatorCalls === 1
+                  ? "I need help with my flight."
+                  : "###STOP###",
+            },
+          },
+        ],
+      });
+    };
+    const userModel: ResponsesModelService = {
+      generate: () =>
+        sync(() => {
+          userSimulatorCalls += 1;
+          return {
+            outputItems: [],
+            functionCalls: [],
+            text:
+              userSimulatorCalls === 1
+                ? "I need help with my flight."
+                : "###STOP###",
+            generationTimeMs: 1,
+          };
+        }),
+    };
+    const model: ModelService = {
+      generate: () =>
+        sync(() => {
+          agentCalls += 1;
+          const content = agentCalls === 3 ? "How can I help?" : "";
+          return {
+            completion: content,
+            message: { role: MessageRole.Assistant, content },
+          };
+        }),
+    };
+    try {
+      seedAirlineDataCache(makeTestData());
+      const state = await runPromise(
+        gen(function* () {
+          const client = yield* HttpClient.HttpClient;
+          const dataFetchLock = yield* makeSemaphore(1);
+          return yield* airlineSolver({
+            model,
+            userModel,
+            client,
+            dataFetchLock,
+            opts: {
+              userModelConfig: {
+                apiKey: "test",
+                model: "gemini-2.5-flash",
+                baseUrl: "https://example.test",
+                reasoningEffort: "medium",
+              },
+            },
+          })(
+            initialTaskState({
+              id: "recovered-agent-response",
+              input: "Scenario",
+              target: { text: "" },
+            })
+          );
+        }).pipe(
+          provide(
+            mergeAll(
+              FetchHttpClient.layer,
+              noopProgressLayer,
+              noopCheckpointLayer
+            )
+          )
+        )
+      );
+      expect(agentCalls).toBe(3);
+      expect(userSimulatorCalls).toBe(2);
+      expect(state.sample.metadata?.["terminationReason"]).toBe(
+        TerminationReason.UserStop
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 describe("evaluateSimulation", () => {

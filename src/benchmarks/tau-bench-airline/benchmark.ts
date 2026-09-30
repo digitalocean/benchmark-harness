@@ -40,6 +40,26 @@ export const TAU_BENCH_AIRLINE_TEMPERATURE = TAU_BENCH_AIRLINE_META.temperature;
 
 export const TAU_BENCH_AIRLINE_ID = TAU_BENCH_AIRLINE_META.id;
 
+const DIGITALOCEAN_INFERENCE_BASE_URLS = new Set([
+  "https://inference.do-ai.run/v1",
+  "https://inference.do-ai-test.run/v1",
+]);
+
+export const DIGITALOCEAN_MODEL_SLUGS: Readonly<Record<string, string>> = {
+  "openai/gpt-5.4-mini": "openai-gpt-5.4-mini",
+};
+
+export function resolveAirlineUserModel(
+  model: string,
+  baseUrl: string | undefined
+): string {
+  const normalizedBaseUrl = baseUrl?.replace(/\/+$/, "");
+  return normalizedBaseUrl !== undefined &&
+    DIGITALOCEAN_INFERENCE_BASE_URLS.has(normalizedBaseUrl)
+    ? (DIGITALOCEAN_MODEL_SLUGS[model] ?? model)
+    : model;
+}
+
 export function airlineRecordToSample(
   record: Readonly<Record<string, unknown>>,
   index: number
@@ -101,19 +121,29 @@ function makeAirlineLayer(
       )
     );
   }
+  const userSimulator = input.userSimulator;
+  const userSimulatorBaseUrl = userSimulator?.baseUrl ?? input.baseUrl;
+  const defaultUserModel = resolveAirlineUserModel(
+    benchmarkConfig.userModel,
+    userSimulatorBaseUrl
+  );
+  const userSimulatorModel = userSimulator?.model ?? defaultUserModel;
   const solverOpts: SolverOpts = definedValues({
     endpointId: benchmarkConfig.endpointId,
     userModelConfig: definedValues({
-      apiKey: input.apiKey,
-      model: benchmarkConfig.userModel,
-      baseUrl: input.baseUrl,
+      apiKey: userSimulator?.apiKey ?? input.apiKey,
+      model: userSimulatorModel,
+      fallbackModel: userSimulatorModel,
+      baseUrl: userSimulatorBaseUrl,
       sessionId: input.sessionId,
       reasoningEffort: benchmarkConfig.userReasoningEffort,
     }),
     inference: {
+      temperature: benchmarkConfig.temperature,
       maxTokens: benchmarkConfig.maxTokens,
       reasoningEffort: benchmarkConfig.reasoningEffort,
       timeoutMs: benchmarkConfig.timeoutMs,
+      completionTimeoutMs: benchmarkConfig.completionTimeoutMs,
       sort: benchmarkConfig.sort,
       providerOnly: benchmarkConfig.providerOnly,
       providerIgnore: benchmarkConfig.providerIgnore,
@@ -137,15 +167,17 @@ function makeAirlineLayer(
         traceHeaders: input.traceHeaders,
       })
     );
-  const userModelLayer = makeResponsesModelLayer(
-    definedValues({
-      model: benchmarkConfig.userModel,
-      apiKey: input.apiKey,
-      baseUrl: input.baseUrl,
-      sessionId: input.sessionId,
-      traceHeaders: input.traceHeaders,
-    })
-  );
+  const userModelLayer =
+    input.responsesModelLayer ??
+    makeResponsesModelLayer(
+      definedValues({
+        model: userSimulatorModel,
+        apiKey: userSimulator?.apiKey ?? input.apiKey,
+        baseUrl: userSimulatorBaseUrl,
+        sessionId: input.sessionId,
+        traceHeaders: input.traceHeaders,
+      })
+    );
   const solverLayer = layerEffect(Solver)(
     gen(function* () {
       const model = yield* Model;

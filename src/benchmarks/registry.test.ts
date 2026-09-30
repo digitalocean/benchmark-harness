@@ -22,8 +22,8 @@ describe("benchmark registry", () => {
     const b = getBenchmark("gpqa_diamond");
     expect(b).toBeDefined();
     expect(b?.id).toBe("gpqa_diamond");
-    expect(b?.temperature).toBe(0.5);
-    expect(b?.defaultEpochs).toBe(10);
+    expect(b?.temperature).toBe(1);
+    expect(b?.defaultEpochs).toBe(3);
     expect(typeof b?.makeLayer).toBe("function");
     expect(typeof b?.makeDatasetLayer).toBe("function");
   });
@@ -313,6 +313,7 @@ describe("benchmark registry", () => {
       "swe_atlas_tw",
       "swe_atlas_rf",
       "deep_swe",
+      "swe_bench_verified",
     ] as const) {
       const result = parseSchema(BenchmarkRunConfigSchema, {
         benchmarkId,
@@ -326,6 +327,20 @@ describe("benchmark registry", () => {
       }
       expect(result.right.agent).toBe("mini_swe");
     }
+  });
+
+  it("registers SWE-bench Verified without a judge model", () => {
+    const benchmark = getBenchmark("swe_bench_verified");
+    const result = parseSchema(BenchmarkRunConfigSchema, {
+      benchmarkId: "swe_bench_verified",
+      model: "z-ai/glm-5.3-flashx",
+      reasoningEffort: "high",
+      agentReasoningEffort: "high",
+    });
+    assertRight(result);
+    expect(benchmark?.defaultEpochs).toBe(1);
+    expect(benchmark?.degradeSolverErrors).toBe(true);
+    expect(result.right).not.toHaveProperty("judgeModel");
   });
 
   it("accepts an ori agent for harbor benchmarks", () => {

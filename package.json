@@ -2,7 +2,7 @@
   "name": "@openrouter/bench-harness",
   "version": "0.0.0",
   "description": "Native TypeScript benchmark harness (inspect-ai-style primitives, Effect-based)",
-  "packageManager": "bun@1.3.14",
+  "license": "Apache-2.0",
   "type": "module",
   "exports": {
     "./benchmarks/benchmark-config": "./src/benchmarks/benchmark-config.ts",
@@ -12,10 +12,12 @@
     "./benchmarks/deep-swe/schema": "./src/benchmarks/deep-swe/schema.ts",
     "./benchmarks/search/core/config": "./src/benchmarks/search/core/config.ts",
     "./benchmarks/search/provenance": "./src/benchmarks/search/provenance.ts",
+    "./benchmarks/swe-bench/schema": "./src/benchmarks/swe-bench/schema.ts",
     "./benchmarks/swe-atlas/schema": "./src/benchmarks/swe-atlas/schema.ts",
     "./benchmarks/terminal-bench/schema": "./src/benchmarks/terminal-bench/schema.ts",
     "./benchmarks/harbor/sandbox": "./src/benchmarks/harbor/sandbox.ts",
     "./benchmarks/harbor/modal-sandbox": "./src/benchmarks/harbor/modal-sandbox.ts",
+    "./benchmarks/harbor/digitalocean-sandbox": "./src/benchmarks/harbor/digitalocean-sandbox.ts",
     "./benchmarks/agent-cli/schema": "./src/benchmarks/agent-cli/schema.ts",
     "./benchmarks/agent-cli/harness": "./src/benchmarks/agent-cli/harness.ts",
     "./benchmarks/agent-cli/runner": "./src/benchmarks/agent-cli/runner.ts",
@@ -40,6 +42,7 @@
   },
   "scripts": {
     "bench": "bun src/cli/index.ts",
+    "serve": "bun src/server/index.ts",
     "build": "tsgo --project tsconfig.build.json",
     "typecheck": "effect-tsgo diagnostics --project tsconfig.json && effect-tsgo diagnostics --project tsconfig.scripts.json",
     "test": "bun test",
@@ -53,6 +56,9 @@
     "package-agent-runtime": "scripts/agent-runtime/package.sh"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1111.0",
+    "@aws-sdk/lib-storage": "^3.1111.0",
+    "@aws-sdk/s3-request-presigner": "^3.1111.0",
     "@effect/platform": "0.95.0",
     "@google-cloud/storage": "7.19.0",
     "@openrouter/sdk": "1.2.113",
@@ -64,6 +70,7 @@
     "hyparquet": "1.26.1",
     "hyparquet-writer": "0.16.1",
     "modal": "0.8.0",
+    "mysql2": "3.23.3",
     "smol-toml": "1.6.1",
     "yaml": "2.8.3",
     "zod": "4.4.3"
@@ -79,5 +86,5 @@
     "typescript": "7.0.2",
     "ultracite": "7.10.1"
   },
-  "license": "Apache-2.0"
+  "packageManager": "bun@1.3.14"
 }

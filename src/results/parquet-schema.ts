@@ -32,6 +32,7 @@ export const BenchmarkResultRowSchema = z.object({
   primary_score: z.string().nullish(),
   sample_id: z.string(),
   epoch: z.number(),
+  sample_generation_time_ms: z.number().nullish(),
   input: z.string().nullable(),
   target: z.string().nullable(),
   score_value: z.string(),

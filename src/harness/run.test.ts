@@ -4,7 +4,9 @@ import { fromIterable } from "effect/Chunk";
 import {
   flatMap as effectFlatMap,
   logInfo,
+  map as effectMap,
   runPromise,
+  sleep,
   succeed as effectSucceed,
   fail as effectFail,
   provide,
@@ -170,7 +172,45 @@ describe("runBenchmark", () => {
     expect(result.metrics.correctAnswers).toBe(1);
     expect(result.usage.outputTokens).toBe(30);
     expect(result.usage.generationTimeMs).toBe(600);
+    expect(result.sampleScores[0]?.generationTimeMs).toBe(100);
     expect(result.sampleScores[0]?.generationIds).toEqual(["fake-Q1 target B"]);
+  });
+  it("emits completed samples immediately when unordered is enabled", async () => {
+    const solver: SolverService = (state) =>
+      sleep(state.sample.id === "s-correct" ? 30 : 0).pipe(
+        effectMap(() => ({
+          ...state,
+          output: {
+            completion: "Answer: B",
+            message: { role: MessageRole.Assistant, content: "Answer: B" },
+          },
+          messages: [
+            ...state.messages,
+            { role: MessageRole.Assistant, content: "Answer: B" as const },
+          ],
+          completed: true,
+        }))
+      );
+    const layers = mergeAll(
+      fakeDatasetLayer(SAMPLES),
+      layerSucceed(Solver, Solver.of(solver)),
+      layerSucceed(Scorer, Scorer.of(mcqScorer)),
+      noopProgressLayer,
+      noopCheckpointLayer
+    );
+
+    const result = await runPromise(
+      runBenchmark({
+        epochs: 1,
+        maxConcurrency: 2,
+        unordered: true,
+      }).pipe(provide(layers))
+    );
+
+    expect(result.sampleScores.map(({ sampleId }) => sampleId)).toEqual([
+      "s-wrong",
+      "s-correct",
+    ]);
   });
   it("captures per-sample message trajectories", async () => {
     const model = fakeModel(() => "Answer: B");
@@ -281,6 +321,29 @@ describe("runBenchmark", () => {
       }).pipe(provide(layers))
     );
     expect(result.metrics.totalQuestions).toBe(1);
+  });
+  it("runs only explicitly selected sample ids", async () => {
+    const model = fakeModel(() => "Answer: B");
+    const solver = generate(model.service, { temperature: 0 });
+    const layers = mergeAll(
+      fakeDatasetLayer(SAMPLES),
+      layerSucceed(Solver, Solver.of(solver)),
+      layerSucceed(Scorer, Scorer.of(mcqScorer)),
+      model.layer,
+      noopProgressLayer,
+      noopCheckpointLayer
+    );
+    const result = await runPromise(
+      runBenchmark({
+        epochs: 1,
+        maxConcurrency: 1,
+        sampleIds: ["s-wrong"],
+      }).pipe(provide(layers))
+    );
+
+    expect(result.sampleScores.map(({ sampleId }) => sampleId)).toEqual([
+      "s-wrong",
+    ]);
   });
   it("scores a sample as Skipped (excluded from accuracy) when the model exhausts 429 retries", async () => {
     const service: ModelService = {

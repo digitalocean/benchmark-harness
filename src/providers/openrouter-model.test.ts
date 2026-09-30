@@ -7,7 +7,7 @@ import { provide as layerProvide } from "effect/Layer";
 
 import { assertSuccess } from "../../test/helpers/exit-asserts";
 import { Model } from "../harness/model";
-import { makeOpenRouterModelLayer } from "./openrouter-model";
+import { makeOpenRouterModelLayer, normalizeBaseUrl } from "./openrouter-model";
 
 function withFunctionCall(stream: string): string {
   return stream
@@ -60,6 +60,18 @@ describe("openrouter-model", () => {
   afterEach(() => {
     restore?.();
     restore = undefined;
+  });
+
+  it("normalizes OpenRouter roots without rewriting versioned inference URLs", () => {
+    expect(normalizeBaseUrl("https://openrouter.ai")).toBe(
+      "https://openrouter.ai/api/v1"
+    );
+    expect(normalizeBaseUrl("https://openrouter.ai/api/v1/")).toBe(
+      "https://openrouter.ai/api/v1"
+    );
+    expect(normalizeBaseUrl("https://inference.do-ai.run/v1/")).toBe(
+      "https://inference.do-ai.run/v1"
+    );
   });
 
   it("uses the Responses endpoint with streaming and cache control", async () => {

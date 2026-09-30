@@ -52,13 +52,20 @@ export interface RunBenchmarkInput {
   readonly injectedBenchmark?: Benchmark<InjectedBenchmarkRunConfig>;
   readonly apiKey: string;
   readonly baseUrl?: string;
+  readonly userSimulator?: {
+    readonly apiKey: string;
+    readonly baseUrl: string;
+    readonly model: string;
+  };
   readonly benchmarkConfig: BenchmarkRunConfig;
   readonly epochs: number;
   readonly maxConcurrency: number;
+  readonly unordered?: boolean | undefined;
   readonly range?: {
     readonly start?: number;
     readonly end?: number;
   };
+  readonly sampleIds?: readonly string[];
   readonly sessionId: string;
   readonly runAttempt?: number;
   readonly datasetRetry?: RetryConfig;
@@ -95,7 +102,9 @@ export function runBenchmarkById(
   const runConfig: RunConfig = definedValues({
     epochs: input.epochs,
     maxConcurrency: input.maxConcurrency,
+    unordered: input.unordered,
     range: input.range,
+    sampleIds: input.sampleIds,
     degradeSolverErrors: benchmark.degradeSolverErrors,
     logAnnotations: definedValues({
       benchmark: input.benchmarkId,
@@ -147,10 +156,9 @@ export function runBenchmarkById(
         )
           .then((resultsPath) => Either.right({ result, resultsPath }))
           .catch((storeErr) => {
-            wLog("Failed to persist benchmark results", {
-              error: String(storeErr),
-            });
-            return Either.right({ result, resultsPath: null });
+            const failure = `Failed to persist benchmark results: ${String(storeErr)}`;
+            wLog("Failed to persist benchmark results", { error: failure });
+            return Either.left(failure);
           });
       }
       return Either.right({ result, resultsPath: null });
@@ -251,6 +259,7 @@ function makeBenchmarkLayer<Config extends BenchmarkRunConfig>(
       baseUrl: input.baseUrl,
       traceHeaders,
       sessionId: input.sessionId,
+      userSimulator: input.userSimulator,
       datasetRetry: input.datasetRetry,
       modelRetry: maxRetries !== undefined ? { maxRetries } : undefined,
       maxOutputTokensCeiling: input.maxOutputTokensCeiling,

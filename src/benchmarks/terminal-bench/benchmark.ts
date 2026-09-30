@@ -15,6 +15,7 @@ import { Solver } from "../../harness/solver";
 import { definedValues } from "../../internal/guards";
 import { getOriHarness } from "../agent-cli/harness";
 import { TERMINAL_BENCH_META } from "../benchmark-meta";
+import { makeDigitalOceanSandboxLayerFromEnv } from "../harbor/digitalocean-sandbox";
 import { makeModalSandboxLayer } from "../harbor/modal-sandbox";
 import { SandboxSession } from "../harbor/sandbox";
 import type { Benchmark, BenchmarkRunInput } from "../types";
@@ -26,6 +27,20 @@ import { terminalBenchScorer } from "./scorer";
 export const TERMINAL_BENCH_ID = TERMINAL_BENCH_META.id;
 
 const TERMINAL_BENCH_APP_NAME = "openrouter-terminal-bench" as const;
+
+export type TerminalBenchSandboxBackend = "modal" | "digitalocean";
+
+export function terminalBenchSandboxBackend(
+  value?: string
+): TerminalBenchSandboxBackend {
+  const backend = value?.trim().toLowerCase() || "modal";
+  if (backend === "modal" || backend === "digitalocean") {
+    return backend;
+  }
+  throw new Error(
+    `Unsupported BENCH_HARBOR_SANDBOX=${JSON.stringify(value)}; expected "modal" or "digitalocean"`
+  );
+}
 
 function makeTerminalBenchLayer(
   input: BenchmarkRunInput
@@ -40,6 +55,7 @@ function makeTerminalBenchLayer(
   const oriSolverOpts: OriSolverOpts = definedValues({
     model: benchmarkConfig.model,
     apiKey: input.apiKey,
+    baseUrl: process.env["OPENROUTER_BASE_URL"] ?? input.baseUrl,
     sessionId: input.sessionId,
     endpointId: benchmarkConfig.endpointId,
     agentPackage: benchmarkConfig.agentPackage,
@@ -58,10 +74,21 @@ function makeTerminalBenchLayer(
       maxAgentTimeoutSec: benchmarkConfig.maxAgentTimeoutSec,
     })
   );
-  const sandboxLayer: Layer<SandboxSession> = makeModalSandboxLayer({
-    appName: TERMINAL_BENCH_APP_NAME,
-    environment: benchmarkConfig.modalEnv,
-  });
+  let sandboxBackend: TerminalBenchSandboxBackend;
+  try {
+    sandboxBackend = terminalBenchSandboxBackend(
+      process.env["BENCH_HARBOR_SANDBOX"]
+    );
+  } catch (error) {
+    return layerFail(error instanceof Error ? error : new Error(String(error)));
+  }
+  const sandboxLayer: Layer<SandboxSession, Error> =
+    sandboxBackend === "digitalocean"
+      ? makeDigitalOceanSandboxLayerFromEnv()
+      : makeModalSandboxLayer({
+          appName: TERMINAL_BENCH_APP_NAME,
+          environment: benchmarkConfig.modalEnv,
+        });
   const solverLayer = layerEffect(Solver)(
     gen(function* () {
       const sessionFactory = yield* SandboxSession;

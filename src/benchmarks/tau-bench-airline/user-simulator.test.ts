@@ -1,17 +1,24 @@
 import { describe, expect, it } from "bun:test";
 
-import { runPromise, succeed } from "effect/Effect";
+import { fail, flatMap, map, runPromise, succeed } from "effect/Effect";
 
+import { ModelError } from "../../harness/core";
 import type {
   ResponsesInputItem,
   ResponsesModelService,
   ResponsesTurn,
 } from "../../providers/responses-model";
+import {
+  getCollectedGenerationIdEntries,
+  recordGenerationId,
+  resetGenerationIds,
+} from "../../runtime/generation-ids";
 import { UserSimulator } from "./user-simulator";
 
 const config = {
   apiKey: "sk-test",
   model: "openai/gpt-5",
+  fallbackModel: "openai-gpt-5-fallback",
   sessionId: "session-1",
   reasoningEffort: "medium",
 } as const;
@@ -58,6 +65,7 @@ describe("tau-bench airline user simulator", () => {
     );
     const simulator = new UserSimulator(model, config);
     simulator.reset("scenario", "Hi");
+
     expect(await runPromise(simulator.generateInitial())).toBe("Hello");
     expect(await runPromise(simulator.step("How are you?"))).toBe("Goodbye");
     expect(inputs[1]).toEqual([
@@ -65,6 +73,61 @@ describe("tau-bench airline user simulator", () => {
       { type: "message", role: "user", content: "Hi" },
       ...responseItems,
       { type: "message", role: "user", content: "How are you?" },
+    ]);
+  });
+
+  it("uses the configured fallback model", async () => {
+    const requestedModels: string[] = [];
+    const model: ResponsesModelService = {
+      generate: (_input, options) => {
+        requestedModels.push(options.model ?? "");
+        return requestedModels.length === 1
+          ? fail(new ModelError({ message: "primary failed" }))
+          : succeed({
+              outputItems: [],
+              functionCalls: [],
+              text: "Fallback response",
+              generationTimeMs: 1,
+            });
+      },
+    };
+    const simulator = new UserSimulator(model, config);
+    simulator.reset("scenario", "Hi");
+
+    expect(await runPromise(simulator.generateInitial())).toBe(
+      "Fallback response"
+    );
+    expect(requestedModels).toEqual([config.model, config.fallbackModel]);
+  });
+
+  it("marks user-model generations as auxiliary usage", async () => {
+    const model: ResponsesModelService = {
+      generate: () =>
+        recordGenerationId("user-generation").pipe(
+          map(() => ({
+            outputItems: [],
+            functionCalls: [],
+            text: "Hello",
+            generationTimeMs: 1,
+          }))
+        ),
+    };
+    const simulator = new UserSimulator(model, config);
+    simulator.reset("scenario", "Hi");
+
+    const entries = await runPromise(
+      resetGenerationIds.pipe(
+        flatMap(() => simulator.generateInitial()),
+        flatMap(() => getCollectedGenerationIdEntries)
+      )
+    );
+    expect(entries).toEqual([
+      {
+        id: "user-generation",
+        isCacheHit: false,
+        countsTowardUsage: false,
+        isResolvedSource: false,
+      },
     ]);
   });
 });
