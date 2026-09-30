@@ -129,6 +129,7 @@ export const CheckpointDataSchema = z.object({
       inputTokens: z.number(),
       outputTokens: z.number(),
       totalTokens: z.number(),
+      cacheReadTokens: z.number().optional(),
       reasoningTokens: z.number(),
       totalCost: z.number(),
       webSearchRequests: z.number().optional(),

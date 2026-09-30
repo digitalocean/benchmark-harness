@@ -472,6 +472,7 @@ const ZERO_AGENT_USAGE: ModelUsage = {
   inputTokens: 0,
   outputTokens: 0,
   totalTokens: 0,
+  cacheReadTokens: 0,
   reasoningTokens: 0,
   totalCost: 0,
 };

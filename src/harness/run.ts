@@ -162,6 +162,7 @@ function accumulateOutcome(
     inputTokens: acc.usage.inputTokens + (u?.inputTokens ?? 0),
     outputTokens: acc.usage.outputTokens + (u?.outputTokens ?? 0),
     totalTokens: acc.usage.totalTokens + (u?.totalTokens ?? 0),
+    cacheReadTokens: acc.usage.cacheReadTokens + (u?.cacheReadTokens ?? 0),
     reasoningTokens: acc.usage.reasoningTokens + (u?.reasoningTokens ?? 0),
     totalCost: acc.usage.totalCost + (u?.totalCost ?? 0),
     generationTimeMs: acc.usage.generationTimeMs + (item.generationTimeMs ?? 0),
@@ -185,15 +186,21 @@ function applyReplayedUsage(
     return outcome;
   }
   const u = outcome.usage;
+  const usage = {
+    ...u,
+    inputTokens: (u?.inputTokens ?? 0) + replayed.inputTokens,
+    outputTokens: (u?.outputTokens ?? 0) + replayed.outputTokens,
+    totalTokens: (u?.totalTokens ?? 0) + replayed.totalTokens,
+    cacheReadTokens: (u?.cacheReadTokens ?? 0) + replayed.cacheReadTokens,
+    reasoningTokens: (u?.reasoningTokens ?? 0) + replayed.reasoningTokens,
+    totalCost: (u?.totalCost ?? 0) + replayed.totalCost,
+  };
   return {
     ...outcome,
-    usage: {
-      ...u,
-      inputTokens: (u?.inputTokens ?? 0) + replayed.inputTokens,
-      outputTokens: (u?.outputTokens ?? 0) + replayed.outputTokens,
-      totalTokens: (u?.totalTokens ?? 0) + replayed.totalTokens,
-      reasoningTokens: (u?.reasoningTokens ?? 0) + replayed.reasoningTokens,
-      totalCost: (u?.totalCost ?? 0) + replayed.totalCost,
+    usage,
+    sampleScore: {
+      ...outcome.sampleScore,
+      usage,
     },
     generationTimeMs:
       (outcome.generationTimeMs ?? 0) + replayed.generationTimeMs,
@@ -228,6 +235,7 @@ function evaluateOne(
         responseItems: state.responseItems,
         requestBody: state.requestBody,
         generationTimeMs: state.output?.generationTimeMs,
+        usage: state.output?.usage,
         metadata: state.sample.metadata,
         input: sample.input,
         target: sample.target.text,
@@ -334,6 +342,7 @@ const ZERO_USAGE: UsageTotals = {
   inputTokens: 0,
   outputTokens: 0,
   totalTokens: 0,
+  cacheReadTokens: 0,
   reasoningTokens: 0,
   totalCost: 0,
   generationTimeMs: 0,

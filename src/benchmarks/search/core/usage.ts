@@ -43,6 +43,7 @@ export function mergeModelUsages(
   const inputTokens = sum(defined.map((usage) => usage.inputTokens));
   const outputTokens = sum(defined.map((usage) => usage.outputTokens));
   const totalTokens = sum(defined.map((usage) => usage.totalTokens));
+  const cacheReadTokens = sum(defined.map((usage) => usage.cacheReadTokens));
   const reasoningTokens = sum(defined.map((usage) => usage.reasoningTokens));
   const totalCost = sum(defined.map((usage) => usage.totalCost));
   const serverToolUse = mergeServerToolUse(
@@ -54,6 +55,7 @@ export function mergeModelUsages(
     inputTokens,
     outputTokens,
     totalTokens,
+    cacheReadTokens,
     reasoningTokens,
     totalCost,
     serverToolUse,

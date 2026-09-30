@@ -1118,6 +1118,7 @@ describe("benchmark runs dashboard", () => {
           inputTokens: 10,
           outputTokens: 5,
           totalTokens: 15,
+          cacheReadTokens: 0,
           reasoningTokens: 2,
           totalCost: 0.01,
           generationTimeMs: 100,

@@ -106,6 +106,7 @@ export function airlineSolver({
         inputTokens: 0,
         outputTokens: 0,
         totalTokens: 0,
+        cacheReadTokens: 0,
         reasoningTokens: 0,
         totalCost: 0,
       };
@@ -157,6 +158,7 @@ export function airlineSolver({
                 accUsage.inputTokens += output.usage.inputTokens ?? 0;
                 accUsage.outputTokens += output.usage.outputTokens ?? 0;
                 accUsage.totalTokens += output.usage.totalTokens ?? 0;
+                accUsage.cacheReadTokens += output.usage.cacheReadTokens ?? 0;
                 accUsage.reasoningTokens += output.usage.reasoningTokens ?? 0;
                 accUsage.totalCost += output.usage.totalCost ?? 0;
               }
@@ -205,6 +207,7 @@ export function airlineSolver({
         inputTokens: accUsage.inputTokens,
         outputTokens: accUsage.outputTokens,
         totalTokens: accUsage.totalTokens,
+        cacheReadTokens: accUsage.cacheReadTokens,
         reasoningTokens: accUsage.reasoningTokens,
         totalCost: accUsage.totalCost,
       };

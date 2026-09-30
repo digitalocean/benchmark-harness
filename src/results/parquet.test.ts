@@ -28,6 +28,7 @@ const USAGE = {
   inputTokens: 100,
   outputTokens: 50,
   totalTokens: 150,
+  cacheReadTokens: 0,
   reasoningTokens: 0,
   totalCost: 0.01,
   generationTimeMs: 1000,
@@ -139,6 +140,7 @@ describe("runResultToParquet", () => {
       expect(row.input_tokens).toBe(100);
       expect(row.output_tokens).toBe(50);
       expect(row.total_tokens).toBe(150);
+      expect(row.cache_read_tokens).toBe(0);
       expect(row.reasoning_tokens).toBe(0);
       expect(row.total_cost).toBe(0.01);
       expect(row.generation_time_ms).toBe(1000);

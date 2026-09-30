@@ -704,6 +704,7 @@ function parseJsonAgentStream(stdout: string): OriAgentRun {
           inputTokens: inputTokens + cacheRead + cacheWrite,
           outputTokens,
           totalTokens,
+          cacheReadTokens: cacheRead,
           reasoningTokens,
           totalCost,
         }

@@ -134,6 +134,7 @@ async function runOriSampleToParquetRow() {
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? 0,
         totalTokens: usage?.totalTokens ?? 0,
+        cacheReadTokens: 0,
         reasoningTokens: usage?.reasoningTokens ?? 0,
         totalCost: usage?.totalCost ?? 0,
         generationTimeMs: state.output?.generationTimeMs ?? 0,
