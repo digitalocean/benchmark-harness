@@ -16,6 +16,10 @@ const originalMysqlPassword = process.env["MYSQL_PASSWORD"];
 const originalSweAtlasJudgeKey = process.env["SWE_ATLAS_JUDGE_API_KEY"];
 const originalSweAtlasJudgeBaseUrl = process.env["SWE_ATLAS_JUDGE_BASE_URL"];
 const originalSweAtlasJudgeModel = process.env["SWE_ATLAS_JUDGE_MODEL"];
+const originalTauSimulatorModel =
+  process.env["TAU_AIRLINE_USER_SIMULATOR_MODEL"];
+const originalTauSimulatorBaseUrl =
+  process.env["TAU_AIRLINE_USER_SIMULATOR_BASE_URL"];
 
 afterEach(() => {
   process.env["SPACES_SECRET_ACCESS_KEY"] = originalSpacesSecret;
@@ -25,6 +29,9 @@ afterEach(() => {
   process.env["SWE_ATLAS_JUDGE_API_KEY"] = originalSweAtlasJudgeKey;
   process.env["SWE_ATLAS_JUDGE_BASE_URL"] = originalSweAtlasJudgeBaseUrl;
   process.env["SWE_ATLAS_JUDGE_MODEL"] = originalSweAtlasJudgeModel;
+  process.env["TAU_AIRLINE_USER_SIMULATOR_MODEL"] = originalTauSimulatorModel;
+  process.env["TAU_AIRLINE_USER_SIMULATOR_BASE_URL"] =
+    originalTauSimulatorBaseUrl;
 });
 
 function args(): RunArgs {
@@ -226,6 +233,46 @@ describe("GPQA child invocation", () => {
     expect(env["BENCH_API_TOKEN"]).toBeUndefined();
     expect(env["BENCH_RUN_TRIGGER_SECRET"]).toBeUndefined();
     expect(env["MYSQL_PASSWORD"]).toBeUndefined();
+  });
+
+  it("routes TAU simulator credentials through DigitalOcean inference", () => {
+    const tauArgs: RunArgs = {
+      ...args(),
+      benchmark: "tau_bench_verified_airline",
+    };
+    for (const baseUrl of [
+      "https://inference.do-ai.run/v1",
+      "https://inference.do-ai-test.run/v1",
+    ]) {
+      const env = childEnvironment(
+        { ...tauArgs, inference: { ...tauArgs.inference, baseUrl } },
+        "candidate-secret",
+        "run-id",
+        "requests.jsonl",
+        "results",
+        "separate-secret"
+      );
+      expect(env["TAU_AIRLINE_USER_SIMULATOR_API_KEY"]).toBe(
+        "candidate-secret"
+      );
+    }
+
+    process.env["TAU_AIRLINE_USER_SIMULATOR_MODEL"] = "ignored-model";
+    process.env["TAU_AIRLINE_USER_SIMULATOR_BASE_URL"] =
+      "https://ignored.example/v1";
+    const externalEnv = childEnvironment(
+      tauArgs,
+      "candidate-secret",
+      "run-id",
+      "requests.jsonl",
+      "results",
+      "separate-secret"
+    );
+    expect(externalEnv["TAU_AIRLINE_USER_SIMULATOR_API_KEY"]).toBe(
+      "separate-secret"
+    );
+    expect(externalEnv["TAU_AIRLINE_USER_SIMULATOR_MODEL"]).toBeUndefined();
+    expect(externalEnv["TAU_AIRLINE_USER_SIMULATOR_BASE_URL"]).toBeUndefined();
   });
 
   it("injects SWE Atlas judge credentials only into Atlas children", () => {

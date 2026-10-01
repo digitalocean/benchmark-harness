@@ -25,7 +25,7 @@ export const TAU_BENCH_AIRLINE_META = {
   id: "tau_bench_verified_airline",
   defaultEpochs: 3,
   temperature: 0,
-  userModel: "openai/gpt-5.4-mini",
+  userModel: "openai-gpt-5.4-mini",
 } as const satisfies BenchmarkMeta;
 
 export const TAU3_BENCH_BANKING_META = {

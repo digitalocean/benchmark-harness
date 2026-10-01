@@ -576,7 +576,11 @@ describe("benchmark runs dashboard", () => {
     expect(body).toContain(
       "more than one epoch can take a long time to finish and is not recommended"
     );
-    expect(body).toContain("TAU user simulator default: gemini-2.5-flash");
+    expect(body).toContain(
+      "TAU always uses openai-gpt-5.4-mini as the simulated customer"
+    );
+    expect(body).toContain('name="simulatorApiKey"');
+    expect(body).toContain("configureTauSimulatorControls");
     expect(body).toContain(
       '...(temperature === "" ? {} : { temperature: Number(temperature) })'
     );

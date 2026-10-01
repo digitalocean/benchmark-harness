@@ -13,7 +13,7 @@ import { retrySalted, withRetryAttemptLogging } from "../../runtime/retry";
 import type { UserModelConfig } from "./types";
 import { USER_SIM_GUIDELINES } from "./user-sim-guidelines";
 
-const USER_FALLBACK_MODEL = "openai/gpt-5.4-mini";
+const USER_FALLBACK_MODEL = "openai-gpt-5.4-mini";
 
 class UserSimError extends TaggedError("UserSimError")<{
   readonly message: string;

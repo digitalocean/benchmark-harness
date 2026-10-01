@@ -191,6 +191,7 @@ export const RunRequestSchema = z
       .transform((value) => value.toLowerCase()),
     inference: InferenceRequestSchema,
     execution: ExecutionRequestSchema.default({}),
+    simulatorApiKey: z.string().min(1).optional(),
     judgeModel: z.string().min(1).regex(IDENTIFIER).optional(),
     logLevel: z
       .string()
@@ -206,6 +207,18 @@ export const RunRequestSchema = z
         code: "custom",
         path: ["execution", "concurrency"],
         message: `Sandbox benchmark concurrency cannot exceed ${MAX_SANDBOX_CONCURRENCY}`,
+      });
+    }
+    if (
+      request.benchmark === "tau_bench_verified_airline" &&
+      !isDigitalOceanInferenceBaseUrl(request.inference.baseUrl) &&
+      request.simulatorApiKey === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["simulatorApiKey"],
+        message:
+          "simulatorApiKey is required when TAU Airline uses OpenRouter or a custom inference endpoint",
       });
     }
   });
@@ -245,6 +258,7 @@ const ReportRetryRequestSchema = z.object({
   sampleId: z.string().min(1).max(500).regex(IDENTIFIER),
   originalEpoch: z.number().int().nonnegative().max(20),
   apiKey: z.string().min(1),
+  simulatorApiKey: z.string().min(1).optional(),
 });
 
 const ReportRetrySourceSchema = z.object({
@@ -258,6 +272,7 @@ const ReportRetrySourceSchema = z.object({
 
 export function resolveRunRequest(request: z.infer<typeof RunRequestSchema>): {
   readonly apiKey: string;
+  readonly simulatorApiKey?: string;
   readonly args: RunArgs;
 } {
   const isSandboxBenchmark = usesSandboxWorkers(request.benchmark);
@@ -267,6 +282,9 @@ export function resolveRunRequest(request: z.infer<typeof RunRequestSchema>): {
   );
   return {
     apiKey,
+    ...(request.simulatorApiKey !== undefined && {
+      simulatorApiKey: request.simulatorApiKey,
+    }),
     args: {
       benchmark: request.benchmark,
       triggeredByEmail: request.triggeredByEmail,
@@ -704,6 +722,7 @@ export async function tauAirlineReportResponse(
       record.id,
       result.file,
       new Uint8Array(readFileSync(result.path)),
+      record.args.inference,
       download
     );
     return response;
@@ -771,6 +790,7 @@ async function createTauAirlineReportResponse(
   runId: string,
   file: string,
   bytes: Uint8Array,
+  inference: RunInference,
   download: boolean
 ): Promise<Response> {
   const rows = await readResultRows(asyncBufferFromBytes(bytes));
@@ -785,15 +805,18 @@ async function createTauAirlineReportResponse(
     /[^A-Za-z0-9._-]/gu,
     "_"
   );
-  return new Response(JSON.stringify({ runId, file, ...report }, null, 2), {
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "private, no-store",
-      ...(download && {
-        "Content-Disposition": `attachment; filename="${safeFilename}"`,
-      }),
-    },
-  });
+  return new Response(
+    JSON.stringify({ runId, file, inference, ...report }, null, 2),
+    {
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "private, no-store",
+        ...(download && {
+          "Content-Disposition": `attachment; filename="${safeFilename}"`,
+        }),
+      },
+    }
+  );
 }
 
 type RemoteRunMetadata = NonNullable<
@@ -888,6 +911,7 @@ async function remoteTauAirlineReportResponse(
           metadata.id,
           result.file,
           result.bytes,
+          metadata.args.inference,
           download
         );
   } catch (error) {
@@ -933,7 +957,7 @@ async function handleCreateRun(request: Request): Promise<Response> {
   if (Either.isLeft(parsed)) {
     return json({ error: firstZodIssueMessage(parsed.left) }, 400);
   }
-  const { apiKey, args } = resolveRunRequest(parsed.right);
+  const { apiKey, simulatorApiKey, args } = resolveRunRequest(parsed.right);
   const rangeError = validateRange(args);
   if (rangeError !== null) {
     return json({ error: rangeError }, 400);
@@ -942,6 +966,7 @@ async function handleCreateRun(request: Request): Promise<Response> {
     return json(
       await startRun(args, {
         apiKey,
+        ...(simulatorApiKey !== undefined && { simulatorApiKey }),
         maxActiveRuns: maxActiveRuns(),
       }),
       202
@@ -1358,6 +1383,19 @@ export async function handleRequest(request: Request): Promise<Response> {
       if (Either.isLeft(parsed)) {
         return json({ error: firstZodIssueMessage(parsed.left) }, 400);
       }
+      if (
+        metadata.args.benchmark === "tau_bench_verified_airline" &&
+        !isDigitalOceanInferenceBaseUrl(metadata.args.inference.baseUrl) &&
+        parsed.right.simulatorApiKey === undefined
+      ) {
+        return json(
+          {
+            error:
+              "simulatorApiKey is required when TAU Airline uses OpenRouter or a custom inference endpoint",
+          },
+          400
+        );
+      }
       const localRecord = getRun(runId);
       const reportResponse = await reportRetrySourceResponse(
         metadata,
@@ -1399,6 +1437,9 @@ export async function handleRequest(request: Request): Promise<Response> {
             sampleId: parsed.right.sampleId,
             originalEpoch: parsed.right.originalEpoch,
             apiKey: parsed.right.apiKey,
+            ...(parsed.right.simulatorApiKey !== undefined && {
+              simulatorApiKey: parsed.right.simulatorApiKey,
+            }),
           }),
           202
         );

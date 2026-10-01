@@ -368,16 +368,37 @@ describe("bench-harness CLI", () => {
       retrievalConfig: "bm25_grep",
     });
   });
-  it("uses server-provided Gemini settings for the TAU user simulator", () => {
+  it("reuses DigitalOcean candidate credentials for the TAU simulator", () => {
+    for (const baseUrl of [
+      "https://inference.do-ai.run/v1",
+      "https://inference.do-ai-test.run/v1/",
+    ]) {
+      expect(
+        tauAirlineUserSimulatorFromEnv({}, "candidate-key", baseUrl)
+      ).toEqual({
+        apiKey: "candidate-key",
+        baseUrl: baseUrl.replace(/\/+$/u, ""),
+      });
+    }
+  });
+
+  it("requires a separate DigitalOcean token for non-DO candidates", () => {
     expect(
-      tauAirlineUserSimulatorFromEnv({
-        TAU_AIRLINE_USER_SIMULATOR_API_KEY: "gemini-key",
-      })
+      tauAirlineUserSimulatorFromEnv(
+        { TAU_AIRLINE_USER_SIMULATOR_API_KEY: "simulator-key" },
+        "candidate-key",
+        "https://openrouter.ai/api/v1"
+      )
     ).toEqual({
-      apiKey: "gemini-key",
-      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-      model: "gemini-2.5-flash",
+      apiKey: "simulator-key",
+      baseUrl: "https://inference.do-ai.run/v1",
     });
-    expect(tauAirlineUserSimulatorFromEnv({})).toBeUndefined();
+    expect(() =>
+      tauAirlineUserSimulatorFromEnv(
+        {},
+        "candidate-key",
+        "https://inference.example.com/v1"
+      )
+    ).toThrow("TAU_AIRLINE_USER_SIMULATOR_API_KEY");
   });
 });

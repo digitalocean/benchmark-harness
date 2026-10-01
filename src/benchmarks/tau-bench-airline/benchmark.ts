@@ -19,6 +19,7 @@ import { Solver } from "../../harness/solver";
 import { Either } from "../../internal/either";
 import { definedValues } from "../../internal/guards";
 import { parseSchema } from "../../internal/zod";
+import { isDigitalOceanInferenceBaseUrl } from "../../providers/digitalocean-inference";
 import { makeOpenRouterModelLayer } from "../../providers/openrouter-model";
 import {
   makeResponsesModelLayer,
@@ -40,25 +41,8 @@ export const TAU_BENCH_AIRLINE_TEMPERATURE = TAU_BENCH_AIRLINE_META.temperature;
 
 export const TAU_BENCH_AIRLINE_ID = TAU_BENCH_AIRLINE_META.id;
 
-const DIGITALOCEAN_INFERENCE_BASE_URLS = new Set([
-  "https://inference.do-ai.run/v1",
-  "https://inference.do-ai-test.run/v1",
-]);
-
-export const DIGITALOCEAN_MODEL_SLUGS: Readonly<Record<string, string>> = {
-  "openai/gpt-5.4-mini": "openai-gpt-5.4-mini",
-};
-
-export function resolveAirlineUserModel(
-  model: string,
-  baseUrl: string | undefined
-): string {
-  const normalizedBaseUrl = baseUrl?.replace(/\/+$/, "");
-  return normalizedBaseUrl !== undefined &&
-    DIGITALOCEAN_INFERENCE_BASE_URLS.has(normalizedBaseUrl)
-    ? (DIGITALOCEAN_MODEL_SLUGS[model] ?? model)
-    : model;
-}
+export const TAU_BENCH_AIRLINE_USER_SIMULATOR_MODEL =
+  TAU_BENCH_AIRLINE_META.userModel;
 
 export function airlineRecordToSample(
   record: Readonly<Record<string, unknown>>,
@@ -123,11 +107,17 @@ function makeAirlineLayer(
   }
   const userSimulator = input.userSimulator;
   const userSimulatorBaseUrl = userSimulator?.baseUrl ?? input.baseUrl;
-  const defaultUserModel = resolveAirlineUserModel(
-    benchmarkConfig.userModel,
-    userSimulatorBaseUrl
-  );
-  const userSimulatorModel = userSimulator?.model ?? defaultUserModel;
+  if (
+    userSimulatorBaseUrl === undefined ||
+    !isDigitalOceanInferenceBaseUrl(userSimulatorBaseUrl)
+  ) {
+    return layerFail(
+      new Error(
+        "TAU Airline user simulator requires a DigitalOcean inference endpoint and access token"
+      )
+    );
+  }
+  const userSimulatorModel = TAU_BENCH_AIRLINE_USER_SIMULATOR_MODEL;
   const solverOpts: SolverOpts = definedValues({
     endpointId: benchmarkConfig.endpointId,
     userModelConfig: definedValues({

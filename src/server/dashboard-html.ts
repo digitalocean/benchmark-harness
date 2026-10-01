@@ -233,7 +233,7 @@ export const DASHBOARD_HTML = `<!doctype html>
               </select>
             </label>
             <div id="tau-user-simulator-default" class="wide muted" hidden>
-              TAU user simulator default: gemini-2.5-flash. The server environment can override this model.
+              TAU always uses openai-gpt-5.4-mini as the simulated customer through DigitalOcean inference. The candidate inference token is reused for DigitalOcean production and test endpoints.
             </div>
             <label>Inference endpoint
               <select id="inference-base-url" name="baseUrl" required>
@@ -267,6 +267,10 @@ export const DASHBOARD_HTML = `<!doctype html>
             </label>
             <label>Inference API key
               <input name="apiKey" type="password" autocomplete="off" required>
+            </label>
+            <label id="tau-simulator-api-key-label" hidden>DigitalOcean simulator access token
+              <input id="tau-simulator-api-key" name="simulatorApiKey" type="password" autocomplete="off" disabled>
+              <span class="field-hint">Required when the candidate uses OpenRouter or a custom endpoint. The simulator runs through https://inference.do-ai.run/v1.</span>
             </label>
             <label>Epochs
               <input name="epochs" type="number" min="1" max="20" value="3" required>
@@ -446,6 +450,12 @@ export const DASHBOARD_HTML = `<!doctype html>
     const startForm = document.getElementById("start-form");
     const startBenchmark = document.getElementById("start-benchmark");
     const tauUserSimulatorDefault = document.getElementById("tau-user-simulator-default");
+    const tauSimulatorApiKeyLabel = document.getElementById(
+      "tau-simulator-api-key-label"
+    );
+    const tauSimulatorApiKey = document.getElementById(
+      "tau-simulator-api-key"
+    );
     const sweAtlasJudgeModelLabel = document.getElementById(
       "swe-atlas-judge-model-label"
     );
@@ -665,8 +675,28 @@ export const DASHBOARD_HTML = `<!doctype html>
       }
     }
 
+    function isDigitalOceanCandidateBaseUrl(value) {
+      return (
+        value === "https://inference.do-ai.run/v1" ||
+        value === "https://inference.do-ai-test.run/v1"
+      );
+    }
+
+    function configureTauSimulatorControls() {
+      const isTau = startBenchmark.value === "tau_bench_verified_airline";
+      const requiresSimulatorApiKey =
+        isTau && !isDigitalOceanCandidateBaseUrl(inferenceBaseUrl.value);
+      tauSimulatorApiKeyLabel.hidden = !requiresSimulatorApiKey;
+      tauSimulatorApiKey.disabled = !requiresSimulatorApiKey;
+      tauSimulatorApiKey.required = requiresSimulatorApiKey;
+      if (!requiresSimulatorApiKey) {
+        tauSimulatorApiKey.value = "";
+      }
+    }
+
     async function configureInferenceControls() {
       const isOther = inferenceBaseUrl.value === "other";
+      configureTauSimulatorControls();
       const isOpenRouter =
         inferenceBaseUrl.value === "https://openrouter.ai/api/v1";
       openrouterProviderLabel.hidden = !isOpenRouter;
@@ -2693,7 +2723,13 @@ export const DASHBOARD_HTML = `<!doctype html>
       }
     }
 
-    function openReportRetryPanel(document, runId, item, resultFields) {
+    function openReportRetryPanel(
+      document,
+      runId,
+      item,
+      resultFields,
+      requiresSimulatorApiKey = false
+    ) {
       document.getElementById("diagnostic-retry-panel")?.remove();
       if (!document.getElementById("diagnostic-retry-style")) {
         const style = document.createElement("style");
@@ -2738,6 +2774,18 @@ export const DASHBOARD_HTML = `<!doctype html>
       apiKey.required = true;
       apiKeyLabel.appendChild(apiKey);
       form.appendChild(apiKeyLabel);
+      const simulatorApiKey = document.createElement("input");
+      if (requiresSimulatorApiKey) {
+        const simulatorApiKeyLabel = document.createElement("label");
+        simulatorApiKeyLabel.appendChild(
+          document.createTextNode("DigitalOcean simulator access token")
+        );
+        simulatorApiKey.type = "password";
+        simulatorApiKey.autocomplete = "off";
+        simulatorApiKey.required = true;
+        simulatorApiKeyLabel.appendChild(simulatorApiKey);
+        form.appendChild(simulatorApiKeyLabel);
+      }
       const triggerLabel = document.createElement("label");
       triggerLabel.appendChild(
         document.createTextNode("Run-trigger password")
@@ -2829,11 +2877,15 @@ export const DASHBOARD_HTML = `<!doctype html>
                 sampleId: item.sampleId,
                 originalEpoch: Number(item.epoch),
                 apiKey: apiKey.value,
+                ...(requiresSimulatorApiKey
+                  ? { simulatorApiKey: simulatorApiKey.value }
+                  : {}),
               }),
             }
           );
           const job = await response.json();
           apiKey.value = "";
+          simulatorApiKey.value = "";
           triggerSecret.value = "";
           await poll(job.id);
         } catch (error) {
@@ -4675,16 +4727,22 @@ export const DASHBOARD_HTML = `<!doctype html>
           retry.title =
             "Rerun this complete TAU scenario without changing the original score";
           retry.addEventListener("click", () =>
-            openReportRetryPanel(document, id, item, (retried) => [
-              ["Result", retried.status],
-              ["Reward", retried.reward],
-              ["Agent latency", formatLatencyMs(retried.latencyMs)],
-              ["Termination", retried.terminationReason],
-              ["Final agent answer", retried.finalAgentAnswer],
-              ["Actual tool calls", retried.actualToolCalls],
-              ["Conversation", conversationText(retried.conversation)],
-              ["Scorer explanation", retried.scorerExplanation],
-            ])
+            openReportRetryPanel(
+              document,
+              id,
+              item,
+              (retried) => [
+                ["Result", retried.status],
+                ["Reward", retried.reward],
+                ["Agent latency", formatLatencyMs(retried.latencyMs)],
+                ["Termination", retried.terminationReason],
+                ["Final agent answer", retried.finalAgentAnswer],
+                ["Actual tool calls", retried.actualToolCalls],
+                ["Conversation", conversationText(retried.conversation)],
+                ["Scorer explanation", retried.scorerExplanation],
+              ],
+              !isDigitalOceanCandidateBaseUrl(report.inference?.baseUrl)
+            )
           );
           itemActions.appendChild(retry);
           card.appendChild(itemActions);
@@ -4947,6 +5005,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       );
       setStartFormValue("triggerSecret", "");
       setStartFormValue("apiKey", "");
+      setStartFormValue("simulatorApiKey", "");
       startDialog.showModal();
 
       await Promise.all([
@@ -5031,6 +5090,9 @@ export const DASHBOARD_HTML = `<!doctype html>
       const pinModel = String(data.get("pinModel") || "").trim();
       const maxRetries = String(data.get("maxRetries") || "").trim();
       const logLevel = String(data.get("logLevel") || "").trim();
+      const simulatorApiKey = String(
+        data.get("simulatorApiKey") || ""
+      ).trim();
       const isOther = data.get("baseUrl") === "other";
       const isOpenRouter =
         data.get("baseUrl") === "https://openrouter.ai/api/v1";
@@ -5039,6 +5101,8 @@ export const DASHBOARD_HTML = `<!doctype html>
         triggeredByEmail: String(data.get("triggeredByEmail")),
         ...(isSweAtlasBenchmark(benchmark) &&
           judgeModel !== "" && { judgeModel }),
+        ...(benchmark === "tau_bench_verified_airline" &&
+          simulatorApiKey !== "" && { simulatorApiKey }),
         ...(logLevel === "" ? {} : { logLevel }),
         inference: {
           baseUrl: String(
@@ -5107,6 +5171,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       sweAtlasJudgeModel.disabled = !isSweAtlas;
       sweAtlasJudgeModel.required = isSweAtlas;
       tauUserSimulatorDefault.hidden = !isTau;
+      configureTauSimulatorControls();
     }
 
     const scheduleRunFilterReload = () => {

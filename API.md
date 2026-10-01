@@ -145,6 +145,29 @@ For SWE Atlas runs, `judgeModel` may also be provided:
 The judge always uses the server-configured DigitalOcean inference endpoint and
 key. `judgeModel` is ignored for non-SWE-Atlas benchmarks.
 
+TAU Airline always uses `openai-gpt-5.4-mini` for its simulated customer through a
+DigitalOcean inference endpoint. When `inference.baseUrl` is
+`https://inference.do-ai.run/v1` or
+`https://inference.do-ai-test.run/v1`, the simulator reuses that endpoint and
+`inference.apiKey`. For OpenRouter or a custom candidate endpoint, provide a
+separate top-level `simulatorApiKey`; the simulator then uses
+`https://inference.do-ai.run/v1`:
+
+```json
+{
+  "benchmark": "tau_bench_verified_airline",
+  "simulatorApiKey": "<DIGITALOCEAN_SIMULATOR_ACCESS_TOKEN>",
+  "inference": {
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "apiKey": "<OPENROUTER_API_KEY>",
+    "model": "provider/model"
+  }
+}
+```
+
+Both inference secrets are launch-only and are never returned, logged, or
+persisted.
+
 Inference constraints:
 
 - `model` accepts letters, digits, `.`, `_`, `:`, `-`, and `/`.
@@ -595,11 +618,14 @@ Request:
 {
   "sampleId": "sample-id",
   "originalEpoch": 0,
-  "apiKey": "<INFERENCE_API_KEY>"
+  "apiKey": "<INFERENCE_API_KEY>",
+  "simulatorApiKey": "<DIGITALOCEAN_SIMULATOR_ACCESS_TOKEN>"
 }
 ```
 
-The source item must exist in the benchmark-specific report.
+`simulatorApiKey` is required only when retrying a TAU Airline run whose
+candidate used OpenRouter or a custom endpoint. The source item must exist in
+the benchmark-specific report.
 
 Response: `202 Accepted`
 

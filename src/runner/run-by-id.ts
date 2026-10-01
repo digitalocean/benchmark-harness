@@ -55,7 +55,6 @@ export interface RunBenchmarkInput {
   readonly userSimulator?: {
     readonly apiKey: string;
     readonly baseUrl: string;
-    readonly model: string;
   };
   readonly benchmarkConfig: BenchmarkRunConfig;
   readonly epochs: number;
