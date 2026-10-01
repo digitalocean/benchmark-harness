@@ -31,6 +31,7 @@ export interface DetailedRunSummary {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly totalTokens: number;
+  readonly cacheReadTokens: number;
   readonly reasoningTokens: number;
   readonly totalCost: number;
   readonly generationTimeMs: number;
@@ -144,6 +145,7 @@ export function summarizeRunRows(
     inputTokens: summary.inputTokens,
     outputTokens: summary.outputTokens,
     totalTokens: summary.totalTokens,
+    cacheReadTokens: summary.cacheReadTokens,
     reasoningTokens: summary.reasoningTokens,
     totalCost: summary.totalCost,
     generationTimeMs: summary.generationTimeMs,

@@ -1274,6 +1274,7 @@ describe("terminal-bench Prime Agent via ori", () => {
       inputTokens: 4494,
       outputTokens: 3,
       totalTokens: 4497,
+      cacheReadTokens: 0,
       reasoningTokens: 0,
       totalCost: 0.0018023999999999998,
     });
@@ -1540,6 +1541,7 @@ describe("terminal-bench Prime Agent via ori", () => {
       inputTokens: 37,
       outputTokens: 8,
       totalTokens: 126,
+      cacheReadTokens: 10,
       reasoningTokens: 0,
       totalCost: 0,
     });
@@ -1619,6 +1621,7 @@ describe("terminal-bench omp via ori", () => {
           cacheRead: 0,
           cacheWrite: 0,
           totalTokens: 127,
+          cacheReadTokens: 0,
           reasoningTokens: 4,
           cost: {
             input: 0.000048,
@@ -1696,6 +1699,7 @@ describe("terminal-bench omp via ori", () => {
       inputTokens: 120,
       outputTokens: 7,
       totalTokens: 127,
+      cacheReadTokens: 0,
       reasoningTokens: 4,
       totalCost: 0.0000536,
     });

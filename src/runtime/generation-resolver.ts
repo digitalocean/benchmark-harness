@@ -30,6 +30,7 @@ export interface ReplayedUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly totalTokens: number;
+  readonly cacheReadTokens: number;
   readonly reasoningTokens: number;
   readonly totalCost: number;
   readonly generationTimeMs: number;
@@ -57,6 +58,8 @@ const GenerationLookupSchema = z.object({
     native_tokens_prompt: z.number().nullish(),
     native_tokens_completion: z.number().nullish(),
     native_tokens_reasoning: z.number().nullish(),
+    native_tokens_cached: z.number().nullish(),
+    native_tokens_cache: z.number().nullish(),
     total_cost: z.number().nullish(),
     generation_time: z.number().nullish(),
   }),
@@ -109,6 +112,7 @@ function usageFromLookup(
     inputTokens,
     outputTokens,
     totalTokens: inputTokens + outputTokens,
+    cacheReadTokens: data.native_tokens_cached ?? data.native_tokens_cache ?? 0,
     reasoningTokens: data.native_tokens_reasoning ?? 0,
     totalCost: data.total_cost ?? 0,
     generationTimeMs: data.generation_time ?? 0,
@@ -286,6 +290,7 @@ function sumReplayedUsage(
     inputTokens: acc.inputTokens + usage.inputTokens,
     outputTokens: acc.outputTokens + usage.outputTokens,
     totalTokens: acc.totalTokens + usage.totalTokens,
+    cacheReadTokens: acc.cacheReadTokens + usage.cacheReadTokens,
     reasoningTokens: acc.reasoningTokens + usage.reasoningTokens,
     totalCost: acc.totalCost + usage.totalCost,
     generationTimeMs: acc.generationTimeMs + usage.generationTimeMs,

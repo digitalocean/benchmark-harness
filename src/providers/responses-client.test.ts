@@ -405,6 +405,36 @@ describe("usageFromResponses", () => {
       reasoningTokens: 2,
     });
   });
+  it("maps input_tokens_details.cached_tokens as cacheReadTokens", () => {
+    expect(
+      usageFromResponses({
+        input_tokens: 100,
+        output_tokens: 20,
+        total_tokens: 120,
+        input_tokens_details: { cached_tokens: 40 },
+      })
+    ).toEqual({
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      cacheReadTokens: 40,
+    });
+  });
+  it("maps camelCase inputTokensDetails.cachedTokens", () => {
+    expect(
+      usageFromResponses({
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        inputTokensDetails: { cachedTokens: 25 },
+      })
+    ).toEqual({
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      cacheReadTokens: 25,
+    });
+  });
   it("returns undefined for null usage", () => {
     expect(usageFromResponses(null)).toBeUndefined();
   });
@@ -446,6 +476,7 @@ describe("usageFromResponses", () => {
       inputTokens: 770,
       outputTokens: 186,
       totalTokens: 956,
+      cacheReadTokens: 0,
       reasoningTokens: 64,
       totalCost: 0.0046999,
       serverToolUse: { toolCallsRequested: 1, toolCallsExecuted: 1 },

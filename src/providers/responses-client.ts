@@ -545,6 +545,12 @@ export function usageFromResponses(
   const detailsRaw =
     usage["outputTokensDetails"] ?? usage["output_tokens_details"];
   const details = isRecord(detailsRaw) ? detailsRaw : undefined;
+  const inputDetailsRaw =
+    usage["inputTokensDetails"] ??
+    usage["input_tokens_details"] ??
+    usage["promptTokensDetails"] ??
+    usage["prompt_tokens_details"];
+  const inputDetails = isRecord(inputDetailsRaw) ? inputDetailsRaw : undefined;
   const inputTokens = numField(usage, "inputTokens", "input_tokens");
   const outputTokens = numField(usage, "outputTokens", "output_tokens");
   const totalTokens = numField(usage, "totalTokens", "total_tokens");
@@ -552,6 +558,18 @@ export function usageFromResponses(
     details !== undefined
       ? numField(details, "reasoningTokens", "reasoning_tokens")
       : undefined;
+  const cacheReadTokens =
+    inputDetails !== undefined
+      ? numField(inputDetails, "cachedTokens", "cached_tokens")
+      : undefined;
+  const cacheReadFromTopLevel = numField(
+    usage,
+    "cacheReadTokens",
+    "cache_read_tokens",
+    "cache_read_input_tokens",
+    "cachedTokens",
+    "cached_tokens"
+  );
   const totalCost = numField(usage, "cost");
   const serverToolUseRaw =
     usage["serverToolUseDetails"] ?? usage["server_tool_use_details"];
@@ -578,6 +596,7 @@ export function usageFromResponses(
     inputTokens,
     outputTokens,
     totalTokens,
+    cacheReadTokens: cacheReadTokens ?? cacheReadFromTopLevel,
     reasoningTokens,
     totalCost,
     serverToolUse: hasServerToolUse

@@ -9,6 +9,7 @@ describe("mergeModelUsages", () => {
           inputTokens: 10,
           outputTokens: 5,
           totalTokens: 15,
+          cacheReadTokens: 0,
           reasoningTokens: 2,
           totalCost: 0.02,
           serverToolUse: {
@@ -22,6 +23,7 @@ describe("mergeModelUsages", () => {
           inputTokens: 4,
           outputTokens: 2,
           totalTokens: 6,
+          cacheReadTokens: 0,
           reasoningTokens: 1,
           totalCost: 0.001,
           serverToolUse: {
@@ -36,6 +38,7 @@ describe("mergeModelUsages", () => {
       inputTokens: 14,
       outputTokens: 7,
       totalTokens: 24,
+      cacheReadTokens: 0,
       reasoningTokens: 3,
       totalCost: 0.021,
       serverToolUse: {
@@ -43,6 +46,17 @@ describe("mergeModelUsages", () => {
         toolCallsRequested: 5,
         toolCallsExecuted: 7,
       },
+    });
+  });
+  it("sums cacheReadTokens when present", () => {
+    expect(
+      mergeModelUsages([
+        { inputTokens: 10, cacheReadTokens: 4 },
+        { inputTokens: 5, cacheReadTokens: 2 },
+      ])
+    ).toEqual({
+      inputTokens: 15,
+      cacheReadTokens: 6,
     });
   });
   it("returns undefined when no call reports usage", () => {

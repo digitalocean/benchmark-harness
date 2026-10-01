@@ -438,6 +438,7 @@ export interface UsageAccumulator {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
   reasoningTokens: number;
   totalCost: number;
   webSearchRequests: number;
@@ -451,6 +452,7 @@ function newUsageAccumulator(): UsageAccumulator {
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
+    cacheReadTokens: 0,
     reasoningTokens: 0,
     totalCost: 0,
     webSearchRequests: 0,
@@ -467,6 +469,7 @@ function addUsage(acc: UsageAccumulator, usage: ModelUsage | undefined): void {
   acc.inputTokens += usage.inputTokens ?? 0;
   acc.outputTokens += usage.outputTokens ?? 0;
   acc.totalTokens += usage.totalTokens ?? 0;
+  acc.cacheReadTokens += usage.cacheReadTokens ?? 0;
   acc.reasoningTokens += usage.reasoningTokens ?? 0;
   acc.totalCost += usage.totalCost ?? 0;
   const serverToolUse = usage.serverToolUse;
@@ -492,6 +495,7 @@ function toModelUsage(acc: UsageAccumulator): ModelUsage {
     inputTokens: acc.inputTokens,
     outputTokens: acc.outputTokens,
     totalTokens: acc.totalTokens,
+    cacheReadTokens: acc.cacheReadTokens,
     reasoningTokens: acc.reasoningTokens,
     totalCost: acc.totalCost,
     serverToolUse: acc.seenServerToolUse

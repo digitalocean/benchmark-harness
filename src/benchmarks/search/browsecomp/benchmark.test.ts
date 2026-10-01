@@ -308,6 +308,7 @@ describe("browseCompRunLevelScores", () => {
         inputTokens: 0,
         outputTokens: 0,
         totalTokens: 0,
+        cacheReadTokens: 0,
         reasoningTokens: 0,
         totalCost: 0,
         generationTimeMs: 0,

@@ -73,6 +73,7 @@ const COLUMN_SPECS = [
   { name: "input_tokens", type: "INT32", nullable: false },
   { name: "output_tokens", type: "INT32", nullable: false },
   { name: "total_tokens", type: "INT32", nullable: false },
+  { name: "cache_read_tokens", type: "INT32", nullable: false },
   { name: "reasoning_tokens", type: "INT32", nullable: false },
   { name: "total_cost", type: "DOUBLE", nullable: false },
   { name: "generation_time_ms", type: "INT32", nullable: false },
@@ -83,6 +84,11 @@ const COLUMN_SPECS = [
   { name: "sample_id", type: "STRING", nullable: false },
   { name: "epoch", type: "INT32", nullable: false },
   { name: "sample_generation_time_ms", type: "INT32", nullable: true },
+  { name: "sample_input_tokens", type: "INT32", nullable: true },
+  { name: "sample_output_tokens", type: "INT32", nullable: true },
+  { name: "sample_total_tokens", type: "INT32", nullable: true },
+  { name: "sample_cache_read_tokens", type: "INT32", nullable: true },
+  { name: "sample_reasoning_tokens", type: "INT32", nullable: true },
   { name: "input", type: "STRING", nullable: true },
   { name: "target", type: "STRING", nullable: true },
   { name: "score_value", type: "STRING", nullable: false },
@@ -188,6 +194,9 @@ function cellValue(name: ColumnName, ctx: RowContext, s: SampleScore): unknown {
     case "total_tokens": {
       return ctx.usage.totalTokens;
     }
+    case "cache_read_tokens": {
+      return ctx.usage.cacheReadTokens;
+    }
     case "reasoning_tokens": {
       return ctx.usage.reasoningTokens;
     }
@@ -217,6 +226,21 @@ function cellValue(name: ColumnName, ctx: RowContext, s: SampleScore): unknown {
     }
     case "sample_generation_time_ms": {
       return s.generationTimeMs ?? null;
+    }
+    case "sample_input_tokens": {
+      return s.usage?.inputTokens ?? null;
+    }
+    case "sample_output_tokens": {
+      return s.usage?.outputTokens ?? null;
+    }
+    case "sample_total_tokens": {
+      return s.usage?.totalTokens ?? null;
+    }
+    case "sample_cache_read_tokens": {
+      return s.usage?.cacheReadTokens ?? null;
+    }
+    case "sample_reasoning_tokens": {
+      return s.usage?.reasoningTokens ?? null;
     }
     case "input": {
       return s.input ?? null;
@@ -453,6 +477,7 @@ export function summarizeChunkRows(
     inputTokens: first.input_tokens,
     outputTokens: first.output_tokens,
     totalTokens: first.total_tokens,
+    cacheReadTokens: first.cache_read_tokens,
     reasoningTokens: first.reasoning_tokens,
     totalCost: first.total_cost,
     generationTimeMs: first.generation_time_ms,

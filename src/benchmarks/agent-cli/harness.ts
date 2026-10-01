@@ -227,10 +227,11 @@ function reasoningFromContent(content: unknown): string | undefined {
 
 function usageFromResult(result: Record<string, unknown>): ModelUsage {
   const { usage } = result;
+  const cacheReadTokens = numberField(usage, "cache_read_input_tokens");
   const inputTokens =
     numberField(usage, "input_tokens") +
     numberField(usage, "cache_creation_input_tokens") +
-    numberField(usage, "cache_read_input_tokens");
+    cacheReadTokens;
   const outputTokens = numberField(usage, "output_tokens");
   const details = isRecord(usage) ? usage["output_tokens_details"] : undefined;
   const reasoningTokens = numberField(details, "thinking_tokens");
@@ -243,6 +244,7 @@ function usageFromResult(result: Record<string, unknown>): ModelUsage {
     inputTokens,
     outputTokens,
     totalTokens: inputTokens + outputTokens,
+    cacheReadTokens,
     reasoningTokens,
     totalCost: numberField(result, "total_cost_usd"),
     ...definedValues({
@@ -704,6 +706,7 @@ function parseJsonAgentStream(stdout: string): OriAgentRun {
           inputTokens: inputTokens + cacheRead + cacheWrite,
           outputTokens,
           totalTokens,
+          cacheReadTokens: cacheRead,
           reasoningTokens,
           totalCost,
         }
