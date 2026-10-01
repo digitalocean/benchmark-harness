@@ -30,6 +30,10 @@ import { runHarnessPromise } from "../internal/effect-logger";
 import { Either } from "../internal/either";
 import { definedValues, isMember } from "../internal/guards";
 import { parseSchema } from "../internal/zod";
+import {
+  DEFAULT_DIGITALOCEAN_INFERENCE_BASE_URL,
+  isDigitalOceanInferenceBaseUrl,
+} from "../providers/digitalocean-inference";
 import { makeLocalResultStore } from "../results/result-store";
 import { datasetSizeById, runBenchmarkById } from "../runner/run-by-id";
 
@@ -176,25 +180,31 @@ function resolveApiKey(): string {
 }
 
 export function tauAirlineUserSimulatorFromEnv(
-  env: NodeJS.ProcessEnv = process.env
-):
-  | {
-      readonly apiKey: string;
-      readonly baseUrl: string;
-      readonly model: string;
-    }
-  | undefined {
+  env: NodeJS.ProcessEnv,
+  inferenceApiKey: string,
+  inferenceBaseUrl: string | undefined
+): {
+  readonly apiKey: string;
+  readonly baseUrl: string;
+} {
+  if (
+    inferenceBaseUrl !== undefined &&
+    isDigitalOceanInferenceBaseUrl(inferenceBaseUrl)
+  ) {
+    return {
+      apiKey: inferenceApiKey,
+      baseUrl: inferenceBaseUrl.replace(/\/+$/u, ""),
+    };
+  }
   const apiKey = env["TAU_AIRLINE_USER_SIMULATOR_API_KEY"]?.trim();
   if (!apiKey) {
-    return undefined;
+    throw new Error(
+      "Set TAU_AIRLINE_USER_SIMULATOR_API_KEY when the TAU candidate uses OpenRouter or a custom inference endpoint."
+    );
   }
   return {
     apiKey,
-    baseUrl:
-      env["TAU_AIRLINE_USER_SIMULATOR_BASE_URL"]?.trim() ||
-      "https://generativelanguage.googleapis.com/v1beta/openai",
-    model:
-      env["TAU_AIRLINE_USER_SIMULATOR_MODEL"]?.trim() || "gemini-2.5-flash",
+    baseUrl: DEFAULT_DIGITALOCEAN_INFERENCE_BASE_URL,
   };
 }
 
@@ -207,13 +217,17 @@ function main(): Promise<void> {
     );
   }
   const apiKey = resolveApiKey();
-  const tauAirlineUserSimulator =
-    args.benchmark === "tau_bench_verified_airline"
-      ? tauAirlineUserSimulatorFromEnv()
-      : undefined;
   const baseUrl = getOrNull(
     runSync(string("OPENROUTER_BASE_URL").pipe(option))
   );
+  const tauAirlineUserSimulator =
+    args.benchmark === "tau_bench_verified_airline"
+      ? tauAirlineUserSimulatorFromEnv(
+          process.env,
+          apiKey,
+          baseUrl ?? undefined
+        )
+      : undefined;
   const epochs = args.epochs ?? benchmark.defaultEpochs;
   const range = resolveRange(args);
   const sessionId = resolveSessionId();

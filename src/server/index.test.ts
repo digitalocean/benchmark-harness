@@ -64,6 +64,7 @@ describe("benchmark API request validation", () => {
     const tau = parseSchema(RunRequestSchema, {
       ...base,
       benchmark: "tau_bench_verified_airline",
+      simulatorApiKey: "simulator-secret",
       inference: inferenceWithoutTemperature,
     });
     const deepSwe = parseSchema(RunRequestSchema, {
@@ -155,6 +156,38 @@ describe("benchmark API request validation", () => {
     }
   });
 
+  it("requires a simulator token only for TAU runs on non-DO endpoints", () => {
+    for (const baseUrl of [
+      "https://inference.do-ai.run/v1",
+      "https://inference.do-ai-test.run/v1/",
+    ]) {
+      const parsed = parseSchema(RunRequestSchema, {
+        ...validArgs(),
+        benchmark: "tau_bench_verified_airline",
+        inference: { ...validArgs().inference, baseUrl },
+      });
+      expect(Either.isRight(parsed)).toBe(true);
+    }
+
+    const missing = parseSchema(RunRequestSchema, {
+      ...validArgs(),
+      benchmark: "tau_bench_verified_airline",
+    });
+    expect(Either.isLeft(missing)).toBe(true);
+
+    const provided = parseSchema(RunRequestSchema, {
+      ...validArgs(),
+      benchmark: "tau_bench_verified_airline",
+      simulatorApiKey: "simulator-secret",
+    });
+    expect(Either.isRight(provided)).toBe(true);
+    if (Either.isRight(provided)) {
+      expect(resolveRunRequest(provided.right).simulatorApiKey).toBe(
+        "simulator-secret"
+      );
+    }
+  });
+
   it("preserves explicit overrides of benchmark defaults", () => {
     const parsed = parseSchema(RunRequestSchema, {
       ...validArgs(),
@@ -185,6 +218,7 @@ describe("benchmark API request validation", () => {
     const tauAirline = parseSchema(RunRequestSchema, {
       ...validArgs(),
       benchmark: "tau_bench_verified_airline",
+      simulatorApiKey: "simulator-secret",
     });
     const deepSwe = parseSchema(RunRequestSchema, {
       ...validArgs(),

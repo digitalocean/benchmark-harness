@@ -1,10 +1,10 @@
 import { Either } from "../internal/either";
 import { firstZodIssueMessage, parseSchema, z } from "../internal/zod";
 
-export const DIGITALOCEAN_INFERENCE_BASE_URLS = [
-  "https://inference.do-ai.run/v1",
-  "https://inference.do-ai-test.run/v1",
-] as const;
+export {
+  DIGITALOCEAN_INFERENCE_BASE_URLS,
+  isDigitalOceanInferenceBaseUrl,
+} from "../providers/digitalocean-inference";
 export const OPENROUTER_INFERENCE_BASE_URL = "https://openrouter.ai/api/v1";
 
 const CATALOG_URL = "https://api.digitalocean.com/v2/gen-ai/models/catalog";
@@ -68,14 +68,6 @@ function openRouterCatalogToken(env: NodeJS.ProcessEnv): string {
 
 function timestamp(value: string | undefined): number {
   return value === undefined ? Number.NEGATIVE_INFINITY : Date.parse(value);
-}
-
-export function isDigitalOceanInferenceBaseUrl(
-  value: string
-): value is (typeof DIGITALOCEAN_INFERENCE_BASE_URLS)[number] {
-  return DIGITALOCEAN_INFERENCE_BASE_URLS.includes(
-    value as (typeof DIGITALOCEAN_INFERENCE_BASE_URLS)[number]
-  );
 }
 
 export function isOpenRouterInferenceBaseUrl(value: string): boolean {

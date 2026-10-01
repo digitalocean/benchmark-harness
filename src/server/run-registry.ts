@@ -14,6 +14,7 @@ import { join } from "node:path";
 
 import { eLog, iLog, wLog } from "../internal/log";
 import { z } from "../internal/zod";
+import { isDigitalOceanInferenceBaseUrl } from "../providers/digitalocean-inference";
 import {
   asyncBufferFromBytes,
   readResultRows,
@@ -717,7 +718,8 @@ export function childEnvironment(
   apiKey: string,
   id: string,
   requestLogPath: string,
-  resultsDir: string
+  resultsDir: string,
+  simulatorApiKey?: string
 ): Record<string, string | undefined> {
   const excluded = new Set([
     "BENCH_API_TOKEN",
@@ -727,9 +729,6 @@ export function childEnvironment(
     "REQUEST_LOG_CONSOLE",
     "SPACES_ACCESS_KEY_ID",
     "SPACES_SECRET_ACCESS_KEY",
-    "TAU_AIRLINE_USER_SIMULATOR_API_KEY",
-    "TAU_AIRLINE_USER_SIMULATOR_BASE_URL",
-    "TAU_AIRLINE_USER_SIMULATOR_MODEL",
     "SWE_ATLAS_JUDGE_API_KEY",
     "SWE_ATLAS_JUDGE_BASE_URL",
     "SWE_ATLAS_JUDGE_MODEL",
@@ -738,6 +737,7 @@ export function childEnvironment(
     Object.entries(process.env).filter(
       ([name]) =>
         !excluded.has(name) &&
+        !name.startsWith("TAU_AIRLINE_USER_SIMULATOR_") &&
         !name.startsWith("MYSQL_") &&
         !name.startsWith("SPACES_")
     )
@@ -751,12 +751,11 @@ export function childEnvironment(
     BENCH_PROGRESS_FILE: join(resultsDir, "..", "progress.json"),
     REQUEST_LOG_FILE: requestLogPath,
     ...(args.benchmark === "tau_bench_verified_airline" && {
-      TAU_AIRLINE_USER_SIMULATOR_API_KEY:
-        process.env["TAU_AIRLINE_USER_SIMULATOR_API_KEY"],
-      TAU_AIRLINE_USER_SIMULATOR_BASE_URL:
-        process.env["TAU_AIRLINE_USER_SIMULATOR_BASE_URL"],
-      TAU_AIRLINE_USER_SIMULATOR_MODEL:
-        process.env["TAU_AIRLINE_USER_SIMULATOR_MODEL"],
+      TAU_AIRLINE_USER_SIMULATOR_API_KEY: isDigitalOceanInferenceBaseUrl(
+        args.inference.baseUrl
+      )
+        ? apiKey
+        : simulatorApiKey,
     }),
     ...(isSweAtlasBenchmark(args.benchmark) && {
       SWE_ATLAS_JUDGE_API_KEY: process.env["SWE_ATLAS_JUDGE_API_KEY"],
@@ -1070,6 +1069,7 @@ export async function startRun(
   args: RunArgs,
   options: {
     readonly apiKey: string;
+    readonly simulatorApiKey?: string;
     readonly maxActiveRuns: number;
   }
 ): Promise<RunRecord> {
@@ -1148,7 +1148,8 @@ export async function startRun(
         options.apiKey,
         id,
         requestLogPath,
-        resultsDir
+        resultsDir,
+        options.simulatorApiKey
       ),
       stdin: "ignore",
       stdout: fd,

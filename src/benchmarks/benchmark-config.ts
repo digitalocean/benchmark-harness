@@ -16,10 +16,7 @@ import {
   ORI_CHANNELS,
   ORI_REASONING_EFFORTS,
 } from "./agent-cli/schema";
-import {
-  TAU3_BENCH_BANKING_META,
-  TAU_BENCH_AIRLINE_META,
-} from "./benchmark-meta";
+import { TAU3_BENCH_BANKING_META } from "./benchmark-meta";
 import { DEFAULT_STEP_LIMIT as DEEP_SWE_DEFAULT_STEP_LIMIT } from "./deep-swe/schema";
 import { DracoPanelConfigSchema } from "./draco/schemas";
 import { SearchLaneConfigSchema } from "./search/core/config";
@@ -99,7 +96,6 @@ export type MmluProBenchmarkConfig = z.infer<
 >;
 
 export const TauBenchOptionsSchema = z.object({
-  userModel: zDefaultedText(TAU_BENCH_AIRLINE_META.userModel),
   userReasoningEffort: z.enum(REASONING_EFFORTS).default("medium"),
 });
 

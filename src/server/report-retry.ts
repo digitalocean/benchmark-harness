@@ -173,6 +173,7 @@ export function startReportRetry(input: {
   readonly sampleId: string;
   readonly originalEpoch: number;
   readonly apiKey: string;
+  readonly simulatorApiKey?: string;
 }): ReportRetryJob {
   if (!supportsReportRetry(input.args.benchmark)) {
     throw new Error(
@@ -222,7 +223,8 @@ export function startReportRetry(input: {
         input.apiKey,
         id,
         requestLogPath,
-        resultsDir
+        resultsDir,
+        input.simulatorApiKey
       ),
       stdin: "ignore",
       stdout: descriptor,
