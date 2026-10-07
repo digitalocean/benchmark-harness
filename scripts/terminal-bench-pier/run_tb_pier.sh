@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Terminal-Bench 2.1 via Pier --env docker on a droplet.
 # Models hit DO Serverless Inference via OPENAI_* pointing at OPENROUTER_*.
+# After each model job, extracts per-task token_usage for optimizer evidence schema 0.1.
 set -euo pipefail
 
 OR_BENCH="$(cd "$(dirname "$0")" && pwd)"
@@ -17,6 +18,7 @@ export PYTHONUNBUFFERED=1
 
 PIER="${PIER:-$(command -v pier)}"
 : "${PIER:?pier not found}"
+PYTHON="${PYTHON:-python3}"
 
 TB_DIR="${TB_DIR:-/root/terminal-bench-2-1}"
 TB_COMMIT="${TB_COMMIT:-c5ee500c185224c97cd6caff7866a990a0057f41}"
@@ -52,10 +54,12 @@ OVERRIDE_MEMORY_MB="${OVERRIDE_MEMORY_MB:-4096}"
 STAMP=$(date +%Y%m%d-%H%M%S)
 LOG_DIR="$OR_BENCH/logs/tb-pier-$STAMP"
 OUT_ROOT="$OR_BENCH/outputs/tb-pier-$STAMP"
+EXTRACTOR="$OR_BENCH/extract_tb_pier_usage.py"
 mkdir -p "$LOG_DIR" "$OUT_ROOT"
 : >"$LOG_DIR/queue.log"
 
 echo "Terminal-Bench Pier -> $LOG_DIR (n=$N_CONCURRENT max_jobs=$MAX_JOBS cpus=$OVERRIDE_CPUS)"
+echo "Per-task usage extract: $EXTRACTOR"
 
 wait_under_cap() {
   while true; do
@@ -68,6 +72,17 @@ wait_under_cap() {
   done
 }
 
+extract_usage() {
+  local job_out="$1"
+  local model="$2"
+  if ! find "$job_out" -type f -name result.json 2>/dev/null | grep -q .; then
+    echo "[$(date -u +%H:%M:%S)] WARN  no result.json under $job_out for $model" | tee -a "$LOG_DIR/queue.log"
+    return 1
+  fi
+  # Walk the whole -o tree; trial result.json files may be nested under Pier job dirs.
+  "$PYTHON" "$EXTRACTOR" "$job_out" 2>&1 | tee -a "$LOG_DIR/usage-extract.log"
+}
+
 for model in "${MODELS[@]}"; do
   wait_under_cap
   safe=${model//\//_}
@@ -76,6 +91,7 @@ for model in "${MODELS[@]}"; do
   mkdir -p "$job_out"
   echo "[$(date -u +%H:%M:%S)] START terminal_bench $model" | tee -a "$LOG_DIR/queue.log"
   (
+    pier_ok=0
     if "$PIER" run \
       -p "$TB_TASKS" \
       -a "$AGENT" \
@@ -90,13 +106,23 @@ for model in "${MODELS[@]}"; do
       --override-memory-mb "$OVERRIDE_MEMORY_MB" \
       -o "$job_out" \
       >"$out" 2>&1; then
+      pier_ok=1
       echo "[$(date -u +%H:%M:%S)] OK    terminal_bench $model" | tee -a "$LOG_DIR/queue.log"
     else
       echo "[$(date -u +%H:%M:%S)] FAIL  terminal_bench $model -> $out" | tee -a "$LOG_DIR/queue.log"
     fi
+    # Always try usage extract when trial trees exist (even on partial FAIL).
+    if extract_usage "$job_out" "$model"; then
+      echo "[$(date -u +%H:%M:%S)] USAGE terminal_bench $model -> $job_out/**/evidence/per_task_usage.jsonl" | tee -a "$LOG_DIR/queue.log"
+    else
+      echo "[$(date -u +%H:%M:%S)] USAGE_FAIL terminal_bench $model" | tee -a "$LOG_DIR/queue.log"
+    fi
+    # Do not delete trial trees — evidence needs tasks/*/result.json agent_result tokens.
+    exit $((1 - pier_ok))
   ) &
 done
 
 echo "launched ${#MODELS[@]} TB jobs (cap $MAX_JOBS); waiting..." | tee -a "$LOG_DIR/queue.log"
 wait
 echo "all TB pier jobs finished" | tee -a "$LOG_DIR/queue.log"
+echo "Collect evidence: $OUT_ROOT/*/evidence/per_task_usage.jsonl" | tee -a "$LOG_DIR/queue.log"
