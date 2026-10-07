@@ -1,3 +1,5 @@
 .env
 logs/
 outputs/
+__pycache__/
+*.pyc
