@@ -1,12 +1,8 @@
 # DeepSWE v1.1 (Pier / Docker) — scores **and** per-task tokens
 
-Droplet runner for DeepSWE against DigitalOcean Serverless Inference using Pier +
-`mini-swe-agent`.
+Droplet runner for DeepSWE against DigitalOcean Serverless Inference using Pier + `mini-swe-agent`.
 
-After each model job, `extract_deepswe_pier_usage.py` walks Pier trial trees and
-writes optimizer evidence schema **0.1** `token_usage` from
-`agent_result.n_input_tokens` / `n_output_tokens` / `n_cache_tokens`
-(same path as prior DeepSWE Pier evidence ingest).
+After each model job, `extract_deepswe_pier_usage.py` walks Pier trial trees and writes optimizer evidence schema **0.1** `token_usage` from `agent_result.n_input_tokens` / `n_output_tokens` / `n_cache_tokens` (same path as prior DeepSWE Pier evidence ingest).
 
 This is **not** the TypeScript portal / Modal harness under `src/benchmarks/deep-swe/`.
 
@@ -49,8 +45,7 @@ tmux new -s deepswe-pier
 bash run_deepswe_pier.sh
 ```
 
-Clones `datacurve-ai/deep-swe` at pin `0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea`
-(v1.1 / 113 tasks — same as prior optimizer Pier waves).
+Clones `datacurve-ai/deep-swe` at pin `0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea` (v1.1 / 113 tasks — same as prior optimizer Pier waves).
 
 ### Outputs (keep all of these)
 
@@ -78,15 +73,15 @@ python3 extract_deepswe_pier_usage_test.py
 
 ## Knobs
 
-| Env | Default | Meaning |
-|-----|---------|---------|
-| `AGENT` | `mini-swe-agent` | Pier agent |
-| `N_CONCURRENT` | `1` | Pier `-n` |
-| `MAX_JOBS` | `2` | models in parallel |
-| `MAX_RETRIES` | `2` | Pier `-r` |
-| `OVERRIDE_CPUS` | `4` | container CPUs |
-| `OVERRIDE_MEMORY_MB` | `8192` | container memory |
-| `DEEP_SWE_DIR` | `/root/deep-swe` | task clone |
+| Env                  | Default          | Meaning            |
+| -------------------- | ---------------- | ------------------ |
+| `AGENT`              | `mini-swe-agent` | Pier agent         |
+| `N_CONCURRENT`       | `1`              | Pier `-n`          |
+| `MAX_JOBS`           | `2`              | models in parallel |
+| `MAX_RETRIES`        | `2`              | Pier `-r`          |
+| `OVERRIDE_CPUS`      | `4`              | container CPUs     |
+| `OVERRIDE_MEMORY_MB` | `8192`           | container memory   |
+| `DEEP_SWE_DIR`       | `/root/deep-swe` | task clone         |
 
 ```bash
 MAX_JOBS=2 N_CONCURRENT=1 bash run_deepswe_pier.sh
